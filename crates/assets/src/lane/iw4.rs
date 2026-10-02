@@ -134,10 +134,13 @@ impl ZoneLane for Iw4Lane {
             .map(|sound| sound.finish(walked.as_ref().map(|_| ()).map_err(|e| e.to_string())));
         match &walked {
             Ok(_) => report.push(format!("zone walk: complete, {} assets", sink.walked)),
-            Err(e) => report.push(format!(
-                "zone walk: stopped after {} assets — {e}",
-                sink.walked
-            )),
+            Err(e) => {
+                diag::warn!(World, "zone walk: stopped after {} assets — {e}", sink.walked);
+                report.push(format!(
+                    "zone walk: stopped after {} assets — {e}",
+                    sink.walked
+                ))
+            }
         }
         report.push(format!(
             "pointer drift: {} unsettled offsets",
@@ -168,12 +171,15 @@ impl ZoneLane for Iw4Lane {
         let vehicle_track = asset_world::build_vehicle_track(&stream);
         let addon_entities = asset_world::addon_map_ents_entity_string(&stream).map(str::to_owned);
         if let Some(path) = &path_data {
+            diag::info!(World, "{}", path.report_line());
             report.push(path.report_line());
         }
         if let Some(track) = &vehicle_track {
+            diag::info!(World, "{}", track.report_line());
             report.push(track.report_line());
         }
         if let Some(entities) = &addon_entities {
+            diag::info!(World, "addon mapents: {} chars", entities.len());
             report.push(format!("addon mapents: {} chars", entities.len()));
         }
         let script_sound = std::mem::take(&mut sink.script_sound).finish();

@@ -410,6 +410,11 @@ fn find_zone_stem(
     if stem.starts_with("mp_") {
         return find_stem_file(root, game, stem);
     }
+    if game.is_some()
+        && let Ok(found) = find_stem_file(root, game, stem)
+    {
+        return Ok(found);
+    }
     let Some(prefixed) = resolve_mp_zone_alias(stem) else {
         return find_stem_file(root, game, stem);
     };
