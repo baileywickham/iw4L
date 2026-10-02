@@ -65,6 +65,12 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
     });
 
     if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+        render_app.add_systems(
+            bevy::render::Render,
+            report_unpresented_window
+                .after(bevy::render::view::prepare_windows)
+                .in_set(bevy::render::RenderSystems::PrepareViews),
+        );
         render_app.edit_schedule(bevy::render::renderer::RenderGraph, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
@@ -80,6 +86,35 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         render_app.edit_schedule(bevy::render::ExtractSchedule, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
+    }
+}
+
+/// On macOS, wgpu's Metal surface hands out no drawable while the window is
+/// occluded (fully covered, on another Space, minimized, or the screen locked):
+/// Bevy's `prepare_windows` swallows `CurrentSurfaceTexture::Occluded`, the
+/// window camera gets no `ViewTarget`, and no view node records. The world
+/// spawn's GPU gate needs a recorded colour pass (`working_hits > 0`), so it
+/// waits with nothing else in the log to say why. A window already occluded at
+/// creation sends no `WindowOccluded`, hence the check on the surface itself.
+fn report_unpresented_window(
+    windows: Res<bevy::render::view::ExtractedWindows>,
+    mut unpresented: Local<bool>,
+) {
+    let Some(window) = windows.primary.and_then(|entity| windows.get(&entity)) else {
+        return;
+    };
+    let now = window.swap_chain_texture_view.is_none();
+    if now == *unpresented {
+        return;
+    }
+    *unpresented = now;
+    if now {
+        diag::warn!(
+            Launch,
+            "window surface: no frame to draw (macOS: window occluded or screen locked) — nothing renders, and world spawn's GPU gate waits until the window is visible"
+        );
+    } else {
+        diag::info!(Launch, "window surface: presenting again");
     }
 }
 
