@@ -112,3 +112,8 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
 - SP base maps walk with the existing IW4 lane. Bare names alias to `mp_` first (`favela` → `mp_favela`); `iw4:favela` now means the exact SP zone. Path data verified on real zones: trainer 94 nodes / 534 links, favela 2270, cliffhanger 2866 (+1 vehicle track, 41 sectors), estate 3041, so_bridge 720.
 - **Spec Ops zones are add-ons.** `so_<mission>_<basemap>` holds no world: `so_killspree_trainer` (7 MB) = Sound 388, Localize 33, TechniqueSet 25, MenuList 5, Material 4, RawFile 3, XModel 2, AddonMapEnts 1, on top of `trainer.ff` (117 MB). A mission load is base map + mission overlay.
 - Known gaps: SP `estate` produces no GfxWorld draw product; running MP gametype scripts on an SP map never spawns the player (not the target path — SO uses its own startup and spawn).
+- SP builtin catalog generated from `iw4sp.exe` by `scripts/gen-iw4sp-catalog.py` (965 builtins; 125 Actor + 9 Sentient methods); validated against upstream's MP catalog (578 shared names, no namespace or developer-flag disagreements).
+- All 15 SO base maps walk headlessly with world + path nodes (estate needed inverted smodel bounds normalized).
+- **Milestone 1 done:** `map so_killspree_trainer` loads The Pit (base `trainer` + mission zone + SP `common.ff`; script order common_mp < SP common < base map < mission), forces SpecOps mode, spawns the player at `info_player_start_so` with an M4. Under `IW4L_GSC_STUB_NATIVES=1`: 238 stubbed natives, 280 runtime errors (level.player missing before main, `_vehicle`, `setsaveddvar`, anim natives).
+- Actor core design: `docs/spec-ops/ACTOR-DESIGN.md`.
+- In progress: GSC animation API; milestone 3 (The Pit playable).
