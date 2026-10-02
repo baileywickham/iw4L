@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use asset_audio::load_mp_sound_bank;
 use asset_game::{load_mp_localized_strings, load_ui_menu_catalog};
-use asset_transport::{LoadProgress, find_runtime_common_mp, find_zone_file, list_mp_map_packs};
+use asset_transport::{LoadProgress, find_runtime_common_mp, find_zone_file, list_map_packs};
 use assets::{
     LoadingPreviewSource, LoadingScreen, MatchLoadRequest, NamespaceSoundIwd, NamespaceTrees,
 };
@@ -239,7 +239,7 @@ fn run_menu(games: asset_transport::GamesRoot, artifacts: PathBuf, cheats: sim::
             menu_report.join("\n")
         ));
     }
-    let maps = list_mp_map_packs(&games);
+    let maps = list_map_packs(&games);
     diag::info!(
         Launch,
         "menu: {} maps in {} packs under {}",

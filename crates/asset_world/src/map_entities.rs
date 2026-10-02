@@ -353,11 +353,17 @@ const MP_SPAWN_CLASSNAMES: &[&str] = &[
     "mp_dd_spawn_defender_start",
 ];
 
+const SP_SPAWN_CLASSNAMES: &[&str] = &["info_player_start"];
+
 pub fn dm_spawn_points(s: &ZoneStream<'_>) -> Vec<SpawnPoint> {
     let Some(text) = entity_string(s) else {
         return Vec::new();
     };
-    parse_spawn_points(text, MP_SPAWN_CLASSNAMES)
+    let spawns = parse_spawn_points(text, MP_SPAWN_CLASSNAMES);
+    if spawns.is_empty() {
+        return parse_spawn_points(text, SP_SPAWN_CLASSNAMES);
+    }
+    spawns
 }
 
 pub fn minimap_corners(s: &ZoneStream<'_>) -> Option<MinimapCorners> {

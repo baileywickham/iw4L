@@ -433,10 +433,17 @@ fn find_zone_stem(
 }
 
 pub fn resolve_mp_zone_alias(zone: &str) -> Option<String> {
-    if zone.is_empty() || zone.starts_with("mp_") || zone.ends_with("_mp") {
+    if zone.is_empty() || zone.starts_with("mp_") || zone.ends_with("_mp") || is_sp_zone_stem(zone)
+    {
         return None;
     }
     Some(format!("mp_{zone}"))
+}
+
+const SP_ZONE_STEMS: &[&str] = &["common", "code_pre_gfx", "code_post_gfx", "ui", "patch"];
+
+pub fn is_sp_zone_stem(zone: &str) -> bool {
+    zone.starts_with("so_") || zone.starts_with("localized_") || SP_ZONE_STEMS.contains(&zone)
 }
 
 pub fn find_common_mp_for_zone(zone_ff: &Path) -> Result<ZoneFile, String> {
@@ -445,7 +452,21 @@ pub fn find_common_mp_for_zone(zone_ff: &Path) -> Result<ZoneFile, String> {
 
 pub fn find_runtime_zone(root: &GamesRoot, zone_ff: &Path, zone: &str) -> Result<ZoneFile, String> {
     match zone_game_for_path(zone_ff) {
-        Some(crate::ZoneGame::Iw4) | None => find_zone_for_tree(zone_ff, zone),
+        Some(crate::ZoneGame::Iw4) | None => {
+            find_zone_for_tree(zone_ff, zone).or_else(|tree_error| {
+                let Some(runtime_tree) = runtime_fallback_tree(root, zone_ff) else {
+                    return Err(tree_error);
+                };
+                let found = find_zone_file_under(&runtime_tree, zone)
+                    .map_err(|error| format!("{tree_error}; {error}"))?;
+                diag::info!(
+                    Zone,
+                    "runtime zone `{zone}`: map tree has no common_mp; using {}",
+                    found.path.display()
+                );
+                Ok(found)
+            })
+        }
         Some(_) => {
             let found = find_zone_file_under(&root.0, zone)?;
             match peek_zone_version(&found.path) {
@@ -462,6 +483,16 @@ pub fn find_runtime_zone(root: &GamesRoot, zone_ff: &Path, zone: &str) -> Result
             }
         }
     }
+}
+
+fn runtime_fallback_tree(root: &GamesRoot, zone_ff: &Path) -> Option<PathBuf> {
+    let tree = game_root_for_zone(zone_ff).ok()?;
+    if find_zone_file_under(&tree, "common_mp").is_ok() {
+        return None;
+    }
+    let common = find_zone_file_version(root, "common_mp", IW4_ZONE_VERSION).ok()?;
+    let runtime = game_root_for_zone(&common.path).ok()?;
+    (runtime != tree).then_some(runtime)
 }
 
 pub fn find_runtime_common_mp(root: &GamesRoot, zone_ff: &Path) -> Result<ZoneFile, String> {
@@ -600,15 +631,69 @@ pub struct MapPack {
 }
 
 pub fn list_mp_maps(root: &GamesRoot) -> Vec<String> {
-    let mut maps: Vec<String> = list_mp_map_packs(root)
-        .into_iter()
-        .flat_map(|pack| pack.maps)
-        .collect();
+    flatten_map_packs(list_mp_map_packs(root))
+}
+
+pub fn list_so_maps(root: &GamesRoot) -> Vec<String> {
+    flatten_map_packs(list_so_map_packs(root))
+}
+
+pub fn list_maps(root: &GamesRoot) -> Vec<String> {
+    flatten_map_packs(list_map_packs(root))
+}
+
+fn flatten_map_packs(packs: Vec<MapPack>) -> Vec<String> {
+    let mut maps: Vec<String> = packs.into_iter().flat_map(|pack| pack.maps).collect();
     maps.sort();
     maps
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum MapRealm {
+    Mp,
+    So,
+}
+
+impl MapRealm {
+    const ALL: [Self; 2] = [Self::Mp, Self::So];
+
+    fn of_stem(stem: &str) -> Option<Self> {
+        if stem.starts_with("mp_") {
+            Some(Self::Mp)
+        } else if stem.starts_with("so_") {
+            Some(Self::So)
+        } else {
+            None
+        }
+    }
+
+    fn carries(self, game: crate::ZoneGame) -> bool {
+        self == Self::Mp || game == crate::ZoneGame::Iw4
+    }
+
+    fn label(self, game: &str, folder: &str) -> String {
+        let game = game.to_ascii_uppercase();
+        match self {
+            Self::Mp => format!("{game} {folder}"),
+            Self::So if folder == "BASE" => format!("{game} SO"),
+            Self::So => format!("{game} SO {folder}"),
+        }
+    }
+}
+
 pub fn list_mp_map_packs(root: &GamesRoot) -> Vec<MapPack> {
+    scan_map_packs(root, &[MapRealm::Mp])
+}
+
+pub fn list_so_map_packs(root: &GamesRoot) -> Vec<MapPack> {
+    scan_map_packs(root, &[MapRealm::So])
+}
+
+pub fn list_map_packs(root: &GamesRoot) -> Vec<MapPack> {
+    scan_map_packs(root, &MapRealm::ALL)
+}
+
+fn scan_map_packs(root: &GamesRoot, realms: &[MapRealm]) -> Vec<MapPack> {
     let mut zones = Vec::new();
     for entry in game_files(&root.0) {
         let path = match entry {
@@ -625,36 +710,42 @@ pub fn list_mp_map_packs(root: &GamesRoot) -> Vec<MapPack> {
         let is_ff = path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("ff"));
-        if !(is_ff && stem.starts_with("mp_")) {
+        let Some(realm) = MapRealm::of_stem(&stem).filter(|realm| is_ff && realms.contains(realm))
+        else {
             continue;
-        }
-        if let Some(game) = zone_game_for_path(&path) {
-            zones.push((game.prefix(), stem, map_pack_folder(&path)));
+        };
+        if let Some(game) = zone_game_for_path(&path)
+            && realm.carries(game)
+        {
+            zones.push((realm, game.prefix(), stem, map_pack_folder(&path)));
         }
     }
-    let loads: HashSet<(&str, &str)> = zones
+    let loads: HashSet<(MapRealm, &str, &str)> = zones
         .iter()
-        .filter_map(|(game, stem, _)| stem.strip_suffix("_load").map(|map| (*game, map)))
+        .filter_map(|(realm, game, stem, _)| {
+            stem.strip_suffix("_load").map(|map| (*realm, *game, map))
+        })
         .collect();
-    let mut packs: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
+    let mut packs: BTreeMap<(MapRealm, &str, &str), Vec<String>> = BTreeMap::new();
     let mut seen = HashSet::new();
-    for (game, stem, folder) in &zones {
+    for (realm, game, stem, folder) in &zones {
         if stem.ends_with("_load")
-            || !(loads.contains(&(*game, stem.as_str())) || !loads.iter().any(|(g, _)| g == game))
+            || !(loads.contains(&(*realm, *game, stem.as_str()))
+                || !loads.iter().any(|(r, g, _)| r == realm && g == game))
         {
             continue;
         }
         let map = format!("{game}:{stem}");
         if seen.insert(map.clone()) {
-            packs.entry((game, folder)).or_default().push(map);
+            packs.entry((*realm, game, folder)).or_default().push(map);
         }
     }
     packs
         .into_iter()
-        .map(|((game, folder), mut maps)| {
+        .map(|((realm, game, folder), mut maps)| {
             maps.sort();
             MapPack {
-                label: format!("{} {folder}", game.to_ascii_uppercase()),
+                label: realm.label(game, folder),
                 maps,
             }
         })

@@ -146,7 +146,9 @@ pub fn spawn_candidate_indices_for(
                 return idx;
             }
         }
-        return Vec::new();
+        if spawns.iter().any(|p| p.classname.starts_with("mp_")) {
+            return Vec::new();
+        }
     }
     ffa_candidate_indices(spawns)
 }

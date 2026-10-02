@@ -752,7 +752,7 @@ fn setup_console(
     binds.apply_defaults();
 
     let maps = asset_transport::games_root_from_env()
-        .map(|root| asset_transport::list_mp_maps(&root))
+        .map(|root| asset_transport::list_maps(&root))
         .unwrap_or_default();
     crate::feature_dispatch::register_feature_commands(&mut registry, &maps);
     crate::frontend::register(&mut registry);
