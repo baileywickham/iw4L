@@ -1866,8 +1866,17 @@ fn extract_dpvs(s: &ZoneStream<'_>, g: GfxWorldGeometry) -> Result<DpvsWorldData
     if let Some(insts_ptr) = g.smodel_insts {
         out.smodel_bounds.reserve(g.smodel_count);
         for i in 0..g.smodel_count {
-            out.smodel_bounds
-                .push(read_bounds(s, insts_ptr.at(i * sz::GFX_STATIC_MODEL_INST))?);
+            let bounds = read_bounds(s, insts_ptr.at(i * sz::GFX_STATIC_MODEL_INST))?;
+            out.smodel_bounds.push(match bounds.negative_half_axis() {
+                Some(_) if !bounds.is_cleared() => {
+                    let (mins, maxs) = (bounds.mins(), bounds.maxs());
+                    Bounds::from_mins_maxs(
+                        std::array::from_fn(|axis| mins[axis].min(maxs[axis])),
+                        std::array::from_fn(|axis| mins[axis].max(maxs[axis])),
+                    )
+                }
+                _ => bounds,
+            });
         }
     }
 

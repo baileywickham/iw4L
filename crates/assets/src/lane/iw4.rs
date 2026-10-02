@@ -424,6 +424,7 @@ impl ZoneLane for Iw4Lane {
         let stage = progress.begin_scoped(StageId::MapAssets, "geometry", None);
         let Some(geometry) = stream.gfx_world() else {
             stage.fail();
+            diag::warn!(World, "no GfxWorld reached — nothing to draw");
             report.push("no GfxWorld reached — nothing to draw".into());
             push_mapents_key_census(&mut report, &stream);
             let dm_spawns = dm_spawn_points(&stream);
@@ -716,6 +717,7 @@ impl ZoneLane for Iw4Lane {
                 }
             }
             Err(e) => {
+                diag::warn!(World, "world mesh: {e}");
                 report.push(format!("world mesh: {e}"));
                 let dm_spawns = dm_spawn_points(&stream);
                 push_mapents_key_census(&mut report, &stream);
