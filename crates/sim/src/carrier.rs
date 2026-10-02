@@ -167,6 +167,11 @@ impl SimWorld {
         crate::script::start(&mut self.ecs, name, receiver, arguments)
     }
 
+    /// Starts a level entry once the first player has spawned (single-player `main`).
+    pub fn start_gsc_with_player(&mut self, name: &str) -> Result<(), crate::script::Fault> {
+        crate::script::start_with_player(&mut self.ecs, name)
+    }
+
     /// Registers the local FoF floats before installing scripts on listen authority.
     pub fn register_local_presentation_dvars(&mut self, local: Option<ClientId>) {
         crate::script::host::natives::iw4::register_local_presentation_dvars(&mut self.ecs, local);

@@ -438,7 +438,21 @@ pub(crate) fn weapon_named(world: &FrameWorld, name: &str) -> Result<u32, String
     world
         .weapon_index_by_script_name(name)
         .filter(|&w| w != 0)
+        .or_else(|| sp_weapon_stand_in(world, name))
         .ok_or_else(|| format!("unknown weapon '{name}'"))
+}
+
+/// SP weapon files are not captured yet; a Spec Ops `m4_grunt` or `usp` resolves to the
+/// MP weapon of the same family (`m4_mp`, `usp_mp`).
+fn sp_weapon_stand_in(world: &FrameWorld, name: &str) -> Option<u32> {
+    if world.game_mode_kind() != gamemode_iw4::GameModeKind::SpecOps {
+        return None;
+    }
+    let family = name.split('_').next()?;
+    [format!("{name}_mp"), format!("{family}_mp")]
+        .iter()
+        .find_map(|candidate| world.weapon_index_by_script_name(candidate))
+        .filter(|&w| w != 0)
 }
 
 pub(crate) fn weapon_name(world: &FrameWorld, weapon: u32) -> String {

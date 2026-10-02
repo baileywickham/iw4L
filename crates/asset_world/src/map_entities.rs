@@ -1178,6 +1178,44 @@ pub fn trigger_models(s: &ZoneStream<'_>) -> Vec<Vec<MapTriggerHull>> {
         .collect()
 }
 
+/// Trigger models of a Spec Ops `AddonMapEnts`; its entity string numbers them `?0`, `?1`, …
+pub fn addon_trigger_models(s: &ZoneStream<'_>) -> Vec<Vec<MapTriggerHull>> {
+    let Some(geo) = s.addon_map_ents() else {
+        return Vec::new();
+    };
+    (0..geo.trigger_model_count)
+        .map(|n| capture_trigger_hulls(s, geo, n).unwrap_or_default())
+        .collect()
+}
+
+/// Renumbers `"model" "?N"` pairs by `base` so addon triggers follow the base map's.
+pub fn offset_trigger_model_keys(entities: &str, base: usize) -> String {
+    let mut out = String::with_capacity(entities.len());
+    let mut rest = entities;
+    let mut previous_was_model = false;
+    while let Some(open) = rest.find('"') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let token = &after[..close];
+        let renumbered = token
+            .strip_prefix('?')
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|_| previous_was_model);
+        match renumbered {
+            Some(n) => out.push_str(&format!("\"?{}\"", n + base)),
+            None => out.push_str(&rest[open..open + close + 2]),
+        }
+        previous_was_model = token.eq_ignore_ascii_case("model") && !previous_was_model;
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapSunStage {
     pub origin: [f32; 3],

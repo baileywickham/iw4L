@@ -1261,6 +1261,7 @@ impl ZoneLane for Iw4Lane {
 pub(crate) struct ScriptZoneWalk {
     pub scripts: crate::ScriptSources,
     pub addon_entities: Option<String>,
+    pub addon_triggers: Vec<Vec<asset_world::MapTriggerHull>>,
     pub sound: Option<Result<asset_audio::SoundCatalog, String>>,
     pub report: Vec<String>,
 }
@@ -1323,6 +1324,7 @@ pub(crate) fn walk_script_zone(
         ),
     });
     walk.addon_entities = asset_world::addon_map_ents_entity_string(&stream).map(str::to_owned);
+    walk.addon_triggers = asset_world::addon_trigger_models(&stream);
     walk.scripts = std::mem::take(&mut sink.scripts);
     walk.report.push(format!(
         "{zone_name}: GSC source assets {} addon mapents {} chars",

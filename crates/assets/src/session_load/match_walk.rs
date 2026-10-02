@@ -174,7 +174,7 @@ pub(super) async fn walk_prepared_match(
         scripts: map_scripts,
         mut world,
         mut materials,
-        collision: clip,
+        collision: mut clip,
         spawns: mut dm_spawns,
         mut bodies,
         fpv_meshes: map_fpv,
@@ -252,7 +252,20 @@ pub(super) async fn walk_prepared_match(
             scripts.overlay(so.common);
             scripts.overlay(map_scripts);
             scripts.overlay(so.mission.scripts);
-            if let Some(addon) = so.mission.addon_entities.take() {
+            if let Some(mut addon) = so.mission.addon_entities.take() {
+                if let Some(clip) = clip.as_mut() {
+                    addon = asset_world::offset_trigger_model_keys(
+                        &addon,
+                        clip.trigger_models.len(),
+                    );
+                    report.push(format!(
+                        "spec ops trigger models: {} after the map's {}",
+                        so.mission.addon_triggers.len(),
+                        clip.trigger_models.len()
+                    ));
+                    clip.trigger_models
+                        .append(&mut so.mission.addon_triggers);
+                }
                 let merged = match scripts.entities() {
                     Some(base) => format!("{base}\n{addon}"),
                     None => addon.clone(),

@@ -260,6 +260,16 @@ pub(crate) fn damage_entity(world: &mut World, hit: &EntityHit) -> bool {
     let after = before.saturating_sub(hit.amount);
     runtime.set_object_field(object, "health", Value::Int(after));
     drop(runtime);
+    if super::players::single_player(world) {
+        diag::info!(
+            Sim,
+            "gsc: entity damage target={} amount={} means={} point={:?}",
+            world.resource::<Runtime>().entities[&object].classname,
+            hit.amount,
+            hit.means,
+            hit.point
+        );
+    }
     let receiver = Value::Object(object);
     raise(
         world,

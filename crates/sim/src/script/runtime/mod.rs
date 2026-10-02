@@ -166,6 +166,28 @@ pub(crate) fn start(
     spawn_thread(world, &program, function, receiver, args).map_err(|m| Fault::at(&location, m))
 }
 
+/// Holds a level entry until the first player entity exists (SP `main` reads `level.player`).
+pub(crate) fn start_with_player(world: &mut World, name: &str) -> Result<(), Fault> {
+    entry(world, name)?;
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.started = true;
+    runtime.player_entries.push(name.into());
+    Ok(())
+}
+
+pub(crate) fn start_player_entries(world: &mut World) -> Result<(), Fault> {
+    let entries = std::mem::take(&mut world.resource_mut::<Runtime>().player_entries);
+    for name in entries {
+        let (program, function, location) = entry(world, &name)?;
+        if let Some(plan) = world.resource_mut::<Runtime>().restart.as_mut() {
+            Arc::make_mut(plan).entries.push(name.clone());
+        }
+        spawn_thread(world, &program, function, Value::level(), Vec::new())
+            .map_err(|m| Fault::at(&location, m))?;
+    }
+    Ok(())
+}
+
 pub(super) fn run_now(
     world: &mut World,
     name: &str,
@@ -960,7 +982,10 @@ fn instruction(
             let value = copy_value(world, pop(thread)?)?;
             let receiver = pop(thread)?;
             let Value::Object(id) = receiver else {
-                return Err("native entity fields are not bound".into());
+                return Err(format!(
+                    "field receiver must be an object or entity, found {}",
+                    type_name(&receiver)
+                ));
             };
             if let Some(client) = world.resource::<Runtime>().player_client(id)
                 && super::host::players::store_field(
@@ -1173,6 +1198,12 @@ fn payload_matches(values: &[Value], arguments: &[Value]) -> bool {
             .all(|(v, a)| equality(v.clone(), a.clone()) == Ok(true))
 }
 
+/// `IW4L_GSC_TRACE_LEVEL=1` logs every level notify (SP flags are level notifies).
+fn trace_level_notifies() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("IW4L_GSC_TRACE_LEVEL").is_ok_and(|v| v == "1"))
+}
+
 fn notify(
     world: &mut World,
     current: &mut Thread,
@@ -1182,6 +1213,9 @@ fn notify(
     now: i64,
 ) -> Result<(), String> {
     if *receiver == Value::Object(0) {
+        if trace_level_notifies() {
+            diag::info!(Sim, "gsc: level notify \"{name}\" t={now}");
+        }
         world.resource_mut::<Runtime>().signals.push(name.clone());
     }
     loop {
@@ -1313,7 +1347,7 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     if runtime.buckets.get(&now).is_some_and(VecDeque::is_empty) {
         runtime.buckets.remove(&now);
     }
-    runtime.loading = false;
+    runtime.loading = !runtime.player_entries.is_empty();
     collect_heap(world);
 }
 

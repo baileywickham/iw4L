@@ -579,7 +579,8 @@ enum Fires {
 }
 
 fn fires(classname: &str) -> Option<Fires> {
-    match classname {
+    // SP prefabs extend the code classes by name: `trigger_multiple_flag_set`, `trigger_use_flag_set`, …
+    match super::entities::code_classname(classname) {
         "trigger_multiple" | "trigger_radius" | "trigger_disk" => Some(Fires::Touch),
         "trigger_once" => Some(Fires::Once),
         "trigger_use" | "trigger_use_touch" => Some(Fires::Use),

@@ -622,12 +622,13 @@ fn extract_cmodels(
     out.cmodels.reserve(g.cmodel_count);
     for i in 0..g.cmodel_count {
         let cm = cmodels_ptr.at(i * sz::CMODEL);
-        let mins = [
+        // IW4 `cmodel_t` opens with `Bounds { midPoint, halfSize }`, not mins/maxs.
+        let mid = [
             s.f32_at(cm, 0).map_err(|_| ClipCollisionError::Truncated)?,
             s.f32_at(cm, 4).map_err(|_| ClipCollisionError::Truncated)?,
             s.f32_at(cm, 8).map_err(|_| ClipCollisionError::Truncated)?,
         ];
-        let maxs = [
+        let half = [
             s.f32_at(cm, 12)
                 .map_err(|_| ClipCollisionError::Truncated)?,
             s.f32_at(cm, 16)
@@ -635,6 +636,8 @@ fn extract_cmodels(
             s.f32_at(cm, 20)
                 .map_err(|_| ClipCollisionError::Truncated)?,
         ];
+        let mins = std::array::from_fn(|axis| mid[axis] - half[axis]);
+        let maxs = std::array::from_fn(|axis| mid[axis] + half[axis]);
         let radius = s
             .f32_at(cm, 24)
             .map_err(|_| ClipCollisionError::Truncated)?;

@@ -65,12 +65,40 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             state,
             ..Default::default()
         };
+        // SP: objective_add( index, state, text, position ); MP: ( index, state, position, icon ).
+        if let Some(Value::LocalizedString(text)) = args.get(2) {
+            diag::info!(Sim, "objective {index}: {} \"{text}\"", string(args, 1)?);
+            if let Some(target) = args.get(3) {
+                place(world, index, target)?;
+            }
+            return Ok(Value::Undefined);
+        }
         if let Some(target) = args.get(2) {
             place(world, index, target)?;
         }
         if args.len() > 3 {
             objective(world, index).icon = string(args, 3)?;
         }
+        Ok(Value::Undefined)
+    });
+    for name in ["objective_string", "objective_string_nomessage"] {
+        registry.register(Function, name, |_, _, args| {
+            index(args)?;
+            Ok(Value::Undefined)
+        });
+    }
+    for name in [
+        "objective_current",
+        "objective_current_nomessage",
+        "objective_additionalcurrent",
+        "objective_ring",
+        "objective_setpointertextoverride",
+    ] {
+        registry.register(Function, name, |_, _, _| Ok(Value::Undefined));
+    }
+    registry.register(Function, "objective_state_nomessage", |world, _, args| {
+        let index = index(args)?;
+        objective(world, index).state = state(args, 1)?;
         Ok(Value::Undefined)
     });
     registry.register(Function, "objective_delete", |world, _, args| {
@@ -84,6 +112,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     });
     registry.register(Function, "objective_state", |world, _, args| {
         let index = index(args)?;
+        if super::players::single_player(world) {
+            diag::info!(Sim, "objective {index}: {}", string(args, 1)?);
+        }
         objective(world, index).state = state(args, 1)?;
         Ok(Value::Undefined)
     });

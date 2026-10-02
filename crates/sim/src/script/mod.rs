@@ -45,7 +45,8 @@ pub use profile::iw4_startup::Iw4Startup;
 pub use profile::iw4sp_startup::Iw4SpStartup;
 pub use program::{ModuleIdentity, Program, Realm, Site};
 pub(crate) use runtime::{
-    advance_scheduler, copy_state, healthy, install, preflight, reset, start, take_signals,
+    advance_scheduler, copy_state, healthy, install, preflight, reset, start, start_with_player,
+    take_signals,
 };
 pub use source::{FileSources, SourceOrigin, SourceResolver, decode_source, normalize_module};
 pub(crate) use value::ArrayKey;

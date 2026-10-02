@@ -80,6 +80,9 @@ pub(crate) struct Runtime {
     pub(crate) pending_restart: Option<bool>,
     pub(crate) restored_pers: BTreeMap<u32, host::restart::Detached>,
     pub(crate) path_nodes: Vec<Option<u64>>,
+    /// SP level entries; they start once the first player has joined and spawned.
+    pub(crate) player_entries: Vec<String>,
+    pub(crate) sp: host::natives::sp::SpState,
 }
 
 impl Runtime {

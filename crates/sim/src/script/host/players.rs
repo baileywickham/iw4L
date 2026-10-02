@@ -844,6 +844,14 @@ pub(crate) fn disconnect_player(world: &mut World, client: u32) {
     }
 }
 
+pub(crate) fn single_player(world: &World) -> bool {
+    world
+        .resource::<Runtime>()
+        .program
+        .as_ref()
+        .is_some_and(|program| program.rules() == crate::script::Realm::Iw4Sp)
+}
+
 pub(crate) fn sync_players(world: &mut World) {
     let request = world.resource::<crate::step::StepRequest>();
     if !request.reason.advances_authority_world() {
@@ -906,10 +914,19 @@ pub(crate) fn sync_players(world: &mut World) {
                         .set_object_field(object, "pers", pers),
                     Err(_) => return,
                 }
-                if run_now(world, CONNECT, Value::Object(object), Vec::new(), now).is_err() {
+                if !single_player(world)
+                    && run_now(world, CONNECT, Value::Object(object), Vec::new(), now).is_err()
+                {
                     return;
                 }
             }
+        }
+        if joined
+            && !world.resource::<Runtime>().player_entries.is_empty()
+            && let Err(fault) = crate::script::runtime::start_player_entries(world)
+        {
+            world.resource_mut::<Runtime>().fault = Some(fault);
+            return;
         }
         deliver_answers(world, client);
     }

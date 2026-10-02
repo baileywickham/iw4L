@@ -1,5 +1,6 @@
 use super::super::args::{arg, kind, string};
 use super::player::player;
+use crate::script::host::players::single_player;
 use crate::LocalPlayerProfile;
 use crate::script::{Namespace::Method, NativeRegistry, Value};
 
@@ -12,11 +13,11 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
                 return Ok(Value::Undefined);
             }
             let name = string(args, 0)?;
-            world
-                .resource::<LocalPlayerProfile>()
-                .get(&name)
-                .map(|value| Value::Int(i32::from(value)))
-                .ok_or_else(|| format!("unknown local player profile field {name}"))
+            match world.resource::<LocalPlayerProfile>().get(&name) {
+                Some(value) => Ok(Value::Int(i32::from(value))),
+                None if single_player(world) => Ok(super::sp::profile_value(world, &name)),
+                None => Err(format!("unknown local player profile field {name}")),
+            }
         },
     );
     registry.register(
@@ -31,6 +32,10 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             }
             let name = string(args, 0)?;
             if world.resource::<LocalPlayerProfile>().get(&name).is_none() {
+                if single_player(world) {
+                    super::sp::set_profile_value(world, &name, arg(args, 1)?.clone());
+                    return Ok(Value::Undefined);
+                }
                 return Err(format!("unknown local player profile field {name}"));
             }
             let value = match arg(args, 1)? {

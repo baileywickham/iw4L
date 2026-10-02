@@ -321,12 +321,7 @@ impl Runtime {
         );
         if kind != EntityKind::HudElem {
             self.set_object_field(id, "classname", Value::string(classname));
-            let code = if classname.starts_with("script_vehicle") {
-                "script_vehicle"
-            } else {
-                classname
-            };
-            self.set_object_field(id, "code_classname", Value::string(code));
+            self.set_object_field(id, "code_classname", Value::string(code_classname(classname)));
             self.set_object_field(id, "origin", Value::Vector([0.0; 3]));
             self.set_object_field(id, "angles", Value::Vector([0.0; 3]));
         }
@@ -464,7 +459,10 @@ impl Runtime {
                 values.insert(ArrayKey::Integer(index), Value::Object(id));
                 id
             } else {
-                self.create_entity(EntityKind::Map, classname)?
+                let id = self.create_entity(EntityKind::Map, classname)?;
+                // A native entity field: every entity reads it, zero unless the map sets it.
+                self.set_object_field(id, "spawnflags", Value::Int(0));
+                id
             };
             let mut radius = None;
             let mut height = None;
@@ -527,6 +525,26 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+pub(crate) fn code_classname(classname: &str) -> &str {
+    if classname.starts_with("script_vehicle") {
+        return "script_vehicle";
+    }
+    const CODES: [&str; 5] = [
+        "trigger_multiple",
+        "trigger_once",
+        "trigger_radius",
+        "trigger_use_touch",
+        "trigger_use",
+    ];
+    if CODES.contains(&classname) {
+        return classname;
+    }
+    CODES
+        .into_iter()
+        .find(|code| classname.strip_prefix(code).is_some_and(|rest| rest.starts_with('_')))
+        .unwrap_or(classname)
 }
 
 pub(crate) const MAX_SCRIPT_ENTITIES: usize = 2048 - 64;

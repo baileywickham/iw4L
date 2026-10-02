@@ -550,8 +550,13 @@ pub fn apply_prepared_match(
             sim.set_gsc_dvar(name, value);
         }
         for entry in script_entries {
-            sim.start_gsc(&entry, sim::script::Value::level(), Vec::new())
-                .map_err(|e| script_refusal(&zone, gametype, "entry", &e))?;
+            match kind == gamemode_iw4::GameModeKind::SpecOps {
+                true => sim.start_gsc_with_player(&entry),
+                false => sim
+                    .start_gsc(&entry, sim::script::Value::level(), Vec::new())
+                    .map(drop),
+            }
+            .map_err(|e| script_refusal(&zone, gametype, "entry", &e))?;
         }
         let load_hold = AuthorityLoadHold(sim.clip_brush_count() > 0);
         if let Some(glass) = scene.fx_glass.as_ref() {
