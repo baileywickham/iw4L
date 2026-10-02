@@ -27,6 +27,7 @@ pub struct MatchLoadRequest {
 
     pub zone: String,
     pub zone_ff: Result<PathBuf, String>,
+    pub addon_ff: Option<PathBuf>,
     pub common_mp: Result<PathBuf, String>,
     pub progress: LoadProgress,
 }
@@ -115,6 +116,7 @@ fn start_match_load(
     }
     *waiting_for_retirement = None;
     let zone_ff = request.zone_ff.clone();
+    let addon_ff = request.addon_ff.clone();
     let common_mp = request.common_mp.clone();
     let progress = request.progress.clone();
     let request_id = request.request_id;
@@ -135,7 +137,7 @@ fn start_match_load(
     let games = identity.map(|identity| asset_transport::GamesRoot(identity.games_root.clone()));
     let task = crate::session_load::load_pool().spawn(async move {
         let sound_path = zone_ff.clone();
-        match load_prepared_match(zone_ff, common_mp, progress.clone()).await {
+        match load_prepared_match(zone_ff, addon_ff, common_mp, progress.clone()).await {
             MatchLoadOutcome::Ready(mut prepared) => {
                 if progress.is_canceled() {
                     return None;
@@ -212,7 +214,11 @@ fn approve_map_load(
             .as_ref()
             .map(|zone| zone.zone_name.clone())
             .unwrap_or_else(|_| request.zone.clone());
-        let zone_ff = found.map(|zone| zone.path);
+        let (zone_ff, addon_ff) =
+            match found.map(|zone| asset_transport::split_so_mission(&zone.path)) {
+                Ok((map, addon)) => (Ok(map), addon),
+                Err(error) => (Err(error), None),
+            };
         let common_mp = match &zone_ff {
             Ok(path) => asset_transport::find_runtime_common_mp(&games, path).map(|zone| zone.path),
             Err(error) => Err(error.clone()),
@@ -239,6 +245,7 @@ fn approve_map_load(
             load_key: request.load_key,
             zone,
             zone_ff,
+            addon_ff,
             common_mp,
             progress,
         });

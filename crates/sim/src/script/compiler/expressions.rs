@@ -33,7 +33,7 @@ impl Parser {
         let location = self.location();
         if self.eat("call") {
             self.invocation(false, false)?;
-        } else if self.eat("thread") {
+        } else if self.eat("thread") || self.eat("childthread") {
             self.invocation(false, true)?;
         } else if self.eat("%") {
             let name = self.ident()?.to_ascii_lowercase();
@@ -160,7 +160,7 @@ impl Parser {
                 self.emit(Op::LoadIndex);
             } else if self.eat("call") {
                 self.invocation(true, false)?;
-            } else if self.eat("thread") {
+            } else if self.eat("thread") || self.eat("childthread") {
                 self.invocation(true, true)?;
             } else {
                 let receiver_call = !self.tokens[self.pos].string

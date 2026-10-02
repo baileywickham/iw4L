@@ -320,7 +320,7 @@ fn truth(value: &Value) -> Result<bool, String> {
     }
 }
 
-fn scalar(value: &Value) -> Option<f32> {
+pub(super) fn scalar(value: &Value) -> Option<f32> {
     match value {
         Value::Int(n) => Some(*n as f32),
         Value::Float(n) => Some(*n),
@@ -848,15 +848,21 @@ fn instruction(
                     let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         native(world, &receiver, &args)
                     }))
-                    .unwrap_or_else(|_| Err("builtin panicked".into()))
-                    .map_err(|m| {
-                        if m == lifecycle::STUB_FAULT {
+                    .unwrap_or_else(|_| Err("builtin panicked".into()));
+                    let value = match value {
+                        Err(m) if m == lifecycle::STUB_FAULT => {
                             let mut runtime = world.resource_mut::<Runtime>();
                             let calls = runtime.unsupported.entry(*name).or_default();
                             *calls = calls.saturating_add(1);
+                            // Loops over a stubbed query must see no elements, not spin on undefined.
+                            if name.ends_with("array") {
+                                crate::script::host::arrays::new_array(world, Vec::new())?
+                            } else {
+                                return Err(format!("{name}: {m}"));
+                            }
                         }
-                        format!("{name}: {m}")
-                    })?;
+                        value => value.map_err(|m| format!("{name}: {m}"))?,
+                    };
                     thread.stack.push(value);
                     deliver_pending(world, thread, now)?;
                 }

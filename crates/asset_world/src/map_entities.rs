@@ -366,6 +366,12 @@ pub fn dm_spawn_points(s: &ZoneStream<'_>) -> Vec<SpawnPoint> {
     spawns
 }
 
+const SO_SPAWN_CLASSNAMES: &[&str] = &["info_player_start_so", "info_player_start_soPlayer2"];
+
+pub fn so_spawn_points(addon_entities: &str) -> Vec<SpawnPoint> {
+    parse_spawn_points(addon_entities, SO_SPAWN_CLASSNAMES)
+}
+
 pub fn minimap_corners(s: &ZoneStream<'_>) -> Option<MinimapCorners> {
     let text = entity_string(s)?;
     parse_minimap_corners(text)

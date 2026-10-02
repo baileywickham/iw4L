@@ -4,6 +4,7 @@ static NEXT_PRODUCTS_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 pub(super) async fn walk_prepared_match(
     zone_ff: Result<PathBuf, String>,
+    addon_ff: Option<PathBuf>,
     common_mp: Result<PathBuf, String>,
     progress: LoadProgress,
 ) -> (MatchLoadOutcome, Option<Arc<CommonSet>>) {
@@ -35,6 +36,11 @@ pub(super) async fn walk_prepared_match(
             Ok::<_, String>((path, image))
         })
     };
+
+    let so_walk = addon_ff.map(|addon| {
+        let progress = progress.clone();
+        pool.spawn(async move { walk_so_mission(&addon, &progress) })
+    });
 
     let mut donor_report = Vec::new();
     let key = CommonKey::for_match(
@@ -160,18 +166,22 @@ pub(super) async fn walk_prepared_match(
         }
     };
 
+    let so_walk = match so_walk {
+        Some(task) => Some(task.await),
+        None => None,
+    };
     let LoadedWorld {
         scripts: map_scripts,
         mut world,
         mut materials,
         collision: clip,
-        spawns: dm_spawns,
+        spawns: mut dm_spawns,
         mut bodies,
         fpv_meshes: map_fpv,
         xanims: map_xanims,
         mut facts,
         arena_bytes: s1_map_bytes,
-        sound,
+        mut sound,
         mut report,
         gaps,
     } = loaded;
@@ -236,11 +246,48 @@ pub(super) async fn walk_prepared_match(
         _ => map_scripts,
     };
     let mut scripts = iw4_scripts;
-    scripts.overlay(map_scripts);
-    report.push(format!(
-        "GSC source assets: {} (map overrides common_mp)",
-        scripts.len()
-    ));
+    match so_walk {
+        Some(mut so) => {
+            report.append(&mut so.report);
+            scripts.overlay(so.common);
+            scripts.overlay(map_scripts);
+            scripts.overlay(so.mission.scripts);
+            if let Some(addon) = so.mission.addon_entities.take() {
+                let merged = match scripts.entities() {
+                    Some(base) => format!("{base}\n{addon}"),
+                    None => addon.clone(),
+                };
+                scripts.set_entities(merged);
+                let so_spawns = asset_world::so_spawn_points(&addon);
+                if !so_spawns.is_empty() {
+                    report.push(format!(
+                        "spec ops spawns: {} from the mission",
+                        so_spawns.len()
+                    ));
+                    dm_spawns = so_spawns;
+                }
+                world.addon_entities = Some(addon);
+            }
+            match (sound.as_mut(), so.mission.sound) {
+                (Some(Ok(map)), Some(Ok(addon))) => map.absorb_unresolved(addon),
+                (_, Some(Err(error))) => {
+                    report.push(format!("spec ops mission sound gap: {error}"))
+                }
+                _ => {}
+            }
+            report.push(format!(
+                "GSC source assets: {} (mission over map over SP common over common_mp)",
+                scripts.len()
+            ));
+        }
+        None => {
+            scripts.overlay(map_scripts);
+            report.push(format!(
+                "GSC source assets: {} (map overrides common_mp)",
+                scripts.len()
+            ));
+        }
+    }
 
     report.push(format!(
         "map teams: allies={:?} axis={:?} attackers={:?} defenders={:?}",
@@ -1263,4 +1310,44 @@ fn t5_map_under_iw4_rules(
     scripts.insert_source(&module, map_main);
     scripts.set_entities(entities);
     scripts
+}
+
+struct SoMissionWalk {
+    common: crate::ScriptSources,
+    mission: crate::lane::ScriptZoneWalk,
+    report: Vec<String>,
+}
+
+fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
+    let mut report = Vec::new();
+    let walk_zone = |path: &Path, with_sound: bool| {
+        let stage = progress.begin_scoped(StageId::MapAssets, "open", None);
+        let opened = open_zone_shared(path);
+        finish_zone_open(stage, &opened);
+        match opened {
+            Ok(image) => crate::lane::walk_script_zone(path, &image, progress, with_sound),
+            Err(error) => crate::lane::ScriptZoneWalk {
+                report: vec![format!("spec ops: open {}: {error}", path.display())],
+                ..Default::default()
+            },
+        }
+    };
+    let common = match find_zone_for_tree(addon, "common") {
+        Ok(found) => walk_zone(&found.path, false),
+        Err(error) => {
+            report.push(format!("spec ops: no SP common zone: {error}"));
+            crate::lane::ScriptZoneWalk::default()
+        }
+    };
+    let mission = walk_zone(addon, true);
+    report.extend(common.report);
+    report.extend(mission.report.iter().cloned());
+    for line in &report {
+        diag::info!(World, "{line}");
+    }
+    SoMissionWalk {
+        common: common.scripts,
+        mission,
+        report,
+    }
 }

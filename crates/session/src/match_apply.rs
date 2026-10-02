@@ -1017,7 +1017,11 @@ fn preflight_match_install(
         diag::info!(Sim, "gsc: script override dir={}", dir.0.display());
     }
     let sources = Sources(std::mem::take(&mut prepared.scripts), script_override);
-    let specops = kind == gamemode_iw4::GameModeKind::SpecOps || zone.starts_with("so_");
+    let kind = match zone.starts_with("so_") {
+        true => gamemode_iw4::GameModeKind::SpecOps,
+        false => kind,
+    };
+    let specops = kind == gamemode_iw4::GameModeKind::SpecOps;
     let gametype = match specops {
         true => gamemode_iw4::GameModeKind::SpecOps.token(),
         false => kind

@@ -11,11 +11,11 @@ pub use asset_core::ZoneGame;
 pub use discover::{
     GamesRoot, MapPack, ZoneFile, ensure_artifacts_dir, find_common_mp_for_envelope,
     find_common_mp_for_zone, find_localized_common_mp_for_zone, find_runtime_common_mp,
-    find_runtime_zone, find_zone_file, find_zone_file_version, find_zone_for_tree,
-    game_root_for_zone, games_content_report, games_root_from_env, games_root_report,
-    group_mp_maps, is_sp_zone_stem, list_map_packs, list_maps, list_mp_map_packs, list_mp_maps,
-    list_so_map_packs, list_so_maps, load_dotenv, map_load_title, peek_zone_version,
-    split_zone_key, zone_game_for_path, zone_version,
+    find_runtime_zone, find_so_base_zone, find_zone_file, find_zone_file_version,
+    find_zone_for_tree, game_root_for_zone, games_content_report, games_root_from_env,
+    games_root_report, group_mp_maps, is_sp_zone_stem, list_map_packs, list_maps,
+    list_mp_map_packs, list_mp_maps, list_so_map_packs, list_so_maps, load_dotenv, map_load_title,
+    peek_zone_version, split_so_mission, split_zone_key, zone_game_for_path, zone_version,
 };
 pub use iwd::{
     IwdFile, IwdIndex, IwdSoundIndex, cached_iwd_dirs, game_main_for_zone, game_mains_under,

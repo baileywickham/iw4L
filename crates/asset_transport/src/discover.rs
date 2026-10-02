@@ -451,6 +451,35 @@ pub fn is_sp_zone_stem(zone: &str) -> bool {
     zone.starts_with("so_") || zone.starts_with("localized_") || SP_ZONE_STEMS.contains(&zone)
 }
 
+pub fn find_so_base_zone(mission_ff: &Path) -> Option<ZoneFile> {
+    let stem = mission_ff.file_stem()?.to_str()?.to_ascii_lowercase();
+    let rest = stem.strip_prefix("so_")?;
+    let tree = game_root_for_zone(mission_ff).ok()?;
+    rest.match_indices('_')
+        .map(|(at, _)| &rest[at + 1..])
+        .filter(|base| !base.is_empty())
+        .find_map(|base| {
+            find_zone_file_under(&tree, base).ok().filter(|found| {
+                found.path != mission_ff && peek_zone_version(&found.path) == Some(IW4_ZONE_VERSION)
+            })
+        })
+}
+
+pub fn split_so_mission(zone_ff: &Path) -> (PathBuf, Option<PathBuf>) {
+    match find_so_base_zone(zone_ff) {
+        Some(base) => {
+            diag::info!(
+                Zone,
+                "spec ops: mission `{}` on base map `{}`",
+                zone_ff.display(),
+                base.path.display()
+            );
+            (base.path, Some(zone_ff.to_path_buf()))
+        }
+        None => (zone_ff.to_path_buf(), None),
+    }
+}
+
 pub fn find_common_mp_for_zone(zone_ff: &Path) -> Result<ZoneFile, String> {
     find_named_zone_for_tree(zone_ff, "common_mp")
 }
@@ -721,6 +750,7 @@ fn scan_map_packs(root: &GamesRoot, realms: &[MapRealm]) -> Vec<MapPack> {
         };
         if let Some(game) = zone_game_for_path(&path)
             && realm.carries(game)
+            && (realm != MapRealm::So || find_so_base_zone(&path).is_some())
         {
             zones.push((realm, game.prefix(), stem, map_pack_folder(&path)));
         }

@@ -20,28 +20,35 @@ impl ZoneStamp {
 
 struct ResidentMap {
     pub(super) zone: ZoneStamp,
+    pub(super) addon: Option<ZoneStamp>,
     pub(super) common: Arc<CommonSet>,
     pub(super) prepared: PreparedMatch,
 }
 
 static RESIDENT_MAP: std::sync::Mutex<Option<ResidentMap>> = std::sync::Mutex::new(None);
 
-fn resident_copy(zone: &ZoneStamp, key: &CommonKey) -> Option<PreparedMatch> {
+fn resident_copy(
+    zone: &ZoneStamp,
+    addon: &Option<ZoneStamp>,
+    key: &CommonKey,
+) -> Option<PreparedMatch> {
     let common = landed_common(key)?;
     let slot = RESIDENT_MAP
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     let resident = slot.as_ref()?;
-    (resident.zone == *zone && Arc::ptr_eq(&resident.common, &common))
+    (resident.zone == *zone && resident.addon == *addon && Arc::ptr_eq(&resident.common, &common))
         .then(|| resident.prepared.clone())
 }
 
 pub async fn load_prepared_match(
     zone_ff: Result<PathBuf, String>,
+    addon_ff: Option<PathBuf>,
     common_mp: Result<PathBuf, String>,
     progress: LoadProgress,
 ) -> MatchLoadOutcome {
     let stamp = zone_ff.as_deref().ok().and_then(ZoneStamp::of);
+    let addon = addon_ff.as_deref().and_then(ZoneStamp::of);
     if let Some(stamp) = &stamp {
         let key = CommonKey::for_match(
             Some(&stamp.path),
@@ -49,7 +56,7 @@ pub async fn load_prepared_match(
             &mut Vec::new(),
         );
         let copying = std::time::Instant::now();
-        if let Some(mut prepared) = resident_copy(stamp, &key) {
+        if let Some(mut prepared) = resident_copy(stamp, &addon, &key) {
             progress.record_reused_scoped(StageId::CommonAssets, "shared common");
             progress.record_reused_scoped(StageId::MapAssets, "resident");
             progress.record_reused_scoped(StageId::Images, "map");
@@ -77,7 +84,8 @@ pub async fn load_prepared_match(
             dropped.prepared.materials.products_id
         );
     }
-    let (outcome, common) = walk_prepared_match(zone_ff, common_mp, progress.clone()).await;
+    let (outcome, common) =
+        walk_prepared_match(zone_ff, addon_ff, common_mp, progress.clone()).await;
     let MatchLoadOutcome::Ready(mut prepared) = outcome else {
         return outcome;
     };
@@ -94,6 +102,7 @@ pub async fn load_prepared_match(
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = Some(ResidentMap {
             zone,
+            addon,
             common,
             prepared: resident,
         });

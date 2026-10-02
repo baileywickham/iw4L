@@ -786,6 +786,9 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
                 let meta = world.client_meta_mut(*id);
                 if meta.lifecycle == ClientLifecycle::Connecting {
                     meta.lifecycle = ClientLifecycle::ChoosingClass;
+                    if world.game_mode_kind() == gamemode_iw4::GameModeKind::SpecOps {
+                        spawn_spec_ops_player(world, tick, *id);
+                    }
                 }
             }
             ClientAction::ChooseDefaultClass {
@@ -955,6 +958,42 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
             }
         }
     }
+}
+
+const SPEC_OPS_DEFAULT_WEAPONS: &[&str] = &["m4_reflex_mp", "m4_mp", "usp_mp"];
+
+fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
+    let spawns = &world.bootstrap_ref().spawns;
+    let Some(point) = crate::spawn::spawn_candidate_indices(spawns)
+        .first()
+        .map(|&index| spawns[index].clone())
+    else {
+        diag::warn!(Sim, "spec ops: no player start for client={}", id.0);
+        return;
+    };
+    crate::script_player::spawn(world, tick, id, point.origin, point.angles, "playing");
+    let held = SPEC_OPS_DEFAULT_WEAPONS.iter().find_map(|name| {
+        let weapon = crate::script_player::weapon_named(world, name).ok()?;
+        crate::script_player::give_weapon(world, id, weapon, false).ok()?;
+        crate::script_player::give_max_ammo(world, id, weapon);
+        Some(weapon)
+    });
+    if let Some(weapon) = held {
+        let _ = crate::script_player::switch_to_weapon_immediate(world, id, weapon);
+    }
+    diag::info!(
+        Sim,
+        "spec ops: client={} spawned at {} [{:.1}, {:.1}, {:.1}] weapon={}",
+        id.0,
+        point.classname,
+        point.origin[0],
+        point.origin[1],
+        point.origin[2],
+        held.map_or_else(
+            || "none".to_owned(),
+            |w| crate::script_player::weapon_name(world, w)
+        )
+    );
 }
 
 fn apply_force_spawn(world: &mut FrameWorld, id: ClientId, pick: crate::SpawnPick) {

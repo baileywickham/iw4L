@@ -135,7 +135,11 @@ impl ZoneLane for Iw4Lane {
         match &walked {
             Ok(_) => report.push(format!("zone walk: complete, {} assets", sink.walked)),
             Err(e) => {
-                diag::warn!(World, "zone walk: stopped after {} assets — {e}", sink.walked);
+                diag::warn!(
+                    World,
+                    "zone walk: stopped after {} assets — {e}",
+                    sink.walked
+                );
                 report.push(format!(
                     "zone walk: stopped after {} assets — {e}",
                     sink.walked
@@ -1251,6 +1255,81 @@ impl ZoneLane for Iw4Lane {
             scripts: sink.scripts,
         }
     }
+}
+
+#[derive(Default)]
+pub(crate) struct ScriptZoneWalk {
+    pub scripts: crate::ScriptSources,
+    pub addon_entities: Option<String>,
+    pub sound: Option<Result<asset_audio::SoundCatalog, String>>,
+    pub report: Vec<String>,
+}
+
+pub(crate) fn walk_script_zone(
+    path: &Path,
+    image: &ZoneImage,
+    progress: &LoadProgress,
+    with_sound: bool,
+) -> ScriptZoneWalk {
+    let zone_name = path.file_stem().map_or_else(
+        || "zone".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    let mut walk = ScriptZoneWalk::default();
+    let header = match image.header() {
+        Ok(header) => header,
+        Err(error) => {
+            walk.report
+                .push(format!("{zone_name}: zone header: {error}"));
+            return walk;
+        }
+    };
+    let mut memory = ZoneMemory::for_header(&header);
+    let mut stream = match memory.stream(&image.bytes) {
+        Ok(stream) => stream,
+        Err(error) => {
+            walk.report
+                .push(format!("{zone_name}: zone arenas: {error}"));
+            return walk;
+        }
+    };
+    let mut sink = MaterialPopulationSink::with_stage(progress.begin_scoped(
+        StageId::MapAssets,
+        zone_name.clone(),
+        None,
+    ));
+    sink.set_capture_zone(asset_core::ZoneOwner::intern(&zone_name));
+    sink.set_capture_ns(asset_core::AssetNamespace::Iw4);
+    if with_sound {
+        sink.sound = Some(asset_audio::ZoneSoundCapture::for_map(
+            path,
+            asset_audio::ZoneGame::Iw4,
+            "addon",
+        ));
+    }
+    let walked = load_zone(&mut stream, &mut sink);
+    walk.sound = sink
+        .sound
+        .take()
+        .map(|sound| sound.finish(walked.as_ref().map(|_| ()).map_err(|e| e.to_string())));
+    if let Some(stage) = sink.stage.take() {
+        stage.finish_from(&walked);
+    }
+    walk.report.push(match &walked {
+        Ok(_) => format!("{zone_name}: script walk complete, {} assets", sink.walked),
+        Err(error) => format!(
+            "{zone_name}: script walk stopped after {} assets — {error}",
+            sink.walked
+        ),
+    });
+    walk.addon_entities = asset_world::addon_map_ents_entity_string(&stream).map(str::to_owned);
+    walk.scripts = std::mem::take(&mut sink.scripts);
+    walk.report.push(format!(
+        "{zone_name}: GSC source assets {} addon mapents {} chars",
+        walk.scripts.len(),
+        walk.addon_entities.as_ref().map_or(0, String::len)
+    ));
+    walk
 }
 
 fn push_mapents_key_census(report: &mut Vec<String>, stream: &fastfile_iw4::ZoneStream<'_>) {

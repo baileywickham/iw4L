@@ -9,6 +9,7 @@ use std::path::Path;
 pub(crate) use helpers::{
     build_iw5_static_model_draw, build_static_model_draw, build_t5_static_model_draw,
 };
+pub(crate) use iw4::{ScriptZoneWalk, walk_script_zone};
 pub(crate) use sink::{CommonWalkSink, MaterialPopulationSink, ZoneWalkSink};
 
 use crate::{

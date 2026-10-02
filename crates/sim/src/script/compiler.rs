@@ -174,6 +174,16 @@ impl Parser {
                         super::runtime::binary(op, a, b).map_err(|e| Fault::at(&location, e))?,
                     );
                 }
+                Op::Vector => {
+                    let mut v = [0.0; 3];
+                    for component in v.iter_mut().rev() {
+                        *component =
+                            super::runtime::scalar(&pop(&mut values)?).ok_or_else(|| {
+                                Fault::at(&location, "vector constant needs numeric components")
+                            })?;
+                    }
+                    values.push(Value::Vector(v));
+                }
                 _ => {
                     return Err(Fault::at(
                         &location,

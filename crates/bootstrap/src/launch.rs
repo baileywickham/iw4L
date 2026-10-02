@@ -185,10 +185,12 @@ fn run_export_gltf(games: asset_transport::GamesRoot, artifacts: PathBuf, zone_a
             game.prefix()
         ));
     }
-    let common_mp = find_runtime_common_mp(&games, &found.path).map(|zone| zone.path);
+    let (map_ff, addon_ff) = asset_transport::split_so_mission(&found.path);
+    let common_mp = find_runtime_common_mp(&games, &map_ff).map(|zone| zone.path);
 
     let prepared = match bevy::tasks::futures_lite::future::block_on(assets::load_prepared_match(
-        Ok(found.path),
+        Ok(map_ff),
+        addon_ff,
         common_mp,
         asset_transport::LoadProgress::default(),
     )) {
@@ -406,10 +408,13 @@ fn run_map(
         .ok()
         .map(|z| z.zone_name.clone())
         .unwrap_or_else(|| requested_stem.to_owned());
-    let zone_ff = found
+    let (zone_ff, addon_ff) = match found
         .as_ref()
-        .map(|z| z.path.clone())
-        .map_err(|e| e.clone());
+        .map(|z| asset_transport::split_so_mission(&z.path))
+    {
+        Ok((map, addon)) => (Ok(map), addon),
+        Err(error) => (Err(error.clone()), None),
+    };
     let common_mp = match &zone_ff {
         Ok(path) => find_runtime_common_mp(&games, path).map(|z| z.path),
         Err(e) => Err(e.clone()),
@@ -517,6 +522,7 @@ fn run_map(
             load_key: Default::default(),
             zone: zone.clone(),
             zone_ff,
+            addon_ff,
             common_mp,
             progress: progress.clone(),
         })
