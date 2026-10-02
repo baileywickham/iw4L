@@ -13,6 +13,8 @@ pub(crate) struct Mechanics {
     bodies: BTreeMap<u64, Body>,
     slides: BTreeMap<u64, Slide>,
     finished: Vec<(u64, &'static str)>,
+    pub(crate) anims: BTreeMap<u64, super::anim::EntityAnim>,
+    pub(crate) anim_notes: Vec<(u64, crate::script::Arc<str>, crate::script::Arc<str>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,6 +176,7 @@ pub(crate) fn advance_mechanics(world: &mut World) {
     advance_motions(world, now);
     advance_bodies(world);
     advance_slides(world);
+    super::anim::advance_anims(world, TICK_S);
     apply_entity_links(world);
     super::players::apply_player_links(world);
     super::presence::settle_collision(world);
@@ -183,6 +186,15 @@ pub(crate) fn deliver_finished(world: &mut World) {
     let finished = std::mem::take(&mut world.resource_mut::<Mechanics>().finished);
     for (object, name) in finished {
         raise(world, Value::Object(object), name, Vec::new());
+    }
+    let notes = std::mem::take(&mut world.resource_mut::<Mechanics>().anim_notes);
+    for (object, flag, note) in notes {
+        raise(
+            world,
+            Value::Object(object),
+            &flag,
+            vec![Value::string(&note)],
+        );
     }
 }
 

@@ -25,6 +25,14 @@ pub struct RawXAnimParts {
     pub indices: Vec<u16>,
 
     pub delta_trans: Option<RawDeltaTrans>,
+    pub delta_quat: Option<RawDeltaQuat>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RawDeltaQuat {
+    pub components: u8,
+    pub indices: Vec<u16>,
+    pub values: Vec<i16>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -123,6 +131,7 @@ pub struct AnimClip {
     pub notifies: Vec<ClipNotify>,
 
     pub delta_translation: Translation,
+    pub delta_yaw: Vec<(f32, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +286,10 @@ impl AnimClip {
         cursor.finish()?;
 
         let delta_translation = decode_delta_trans(parts).unwrap_or(Translation::Default);
+        let delta_yaw = parts
+            .delta_quat
+            .as_ref()
+            .map_or_else(Vec::new, decode_delta_yaw);
 
         Ok(Self {
             name: parts.name.clone(),
@@ -286,6 +299,7 @@ impl AnimClip {
             tracks,
             notifies: parts.notifies.clone(),
             delta_translation,
+            delta_yaw,
         })
     }
 
@@ -342,9 +356,56 @@ impl AnimClip {
     }
 
     #[must_use]
+    pub fn abs_delta_yaw(&self, frac: f32) -> f32 {
+        let frame = frac.clamp(0.0, 1.0) * f32::from(self.numframes);
+        let next = self.delta_yaw.partition_point(|(at, _)| *at <= frame);
+        match (
+            next.checked_sub(1).map(|i| self.delta_yaw[i]),
+            self.delta_yaw.get(next).copied(),
+        ) {
+            (None, None) => 0.0,
+            (Some((_, yaw)), None) | (None, Some((_, yaw))) => yaw,
+            (Some((from, a)), Some((to, b))) => {
+                let span = (b - a + 540.0).rem_euclid(360.0) - 180.0;
+                a + span * (frame - from) / (to - from)
+            }
+        }
+    }
+
+    #[must_use]
     pub fn has_delta(&self) -> bool {
         !matches!(self.delta_translation, Translation::Default)
     }
+}
+
+fn decode_delta_yaw(quat: &RawDeltaQuat) -> Vec<(f32, f32)> {
+    let n = quat.components as usize;
+    if n == 0 {
+        return Vec::new();
+    }
+    let yaw = |q: &[i16]| {
+        let [x, y, z, w] = match q {
+            [z, w] => [0.0, 0.0, f32::from(*z), f32::from(*w)],
+            [x, y, z, w] => [f32::from(*x), f32::from(*y), f32::from(*z), f32::from(*w)],
+            _ => [0.0, 0.0, 0.0, 1.0],
+        };
+        (2.0 * (w * z + x * y))
+            .atan2(w * w + x * x - y * y - z * z)
+            .to_degrees()
+    };
+    if quat.indices.is_empty() {
+        return quat
+            .values
+            .chunks_exact(n)
+            .take(1)
+            .map(|q| (0.0, yaw(q)))
+            .collect();
+    }
+    quat.indices
+        .iter()
+        .zip(quat.values.chunks_exact(n))
+        .map(|(frame, q)| (f32::from(*frame), yaw(q)))
+        .collect()
 }
 
 fn decode_delta_trans(parts: &RawXAnimParts) -> Result<Translation> {

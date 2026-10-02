@@ -59,6 +59,7 @@ impl Default for NativeRegistry {
         super::turrets::register(&mut registry);
         super::triggers::register(&mut registry);
         super::spectators::register(&mut registry);
+        super::anim::register(&mut registry);
         registry
     }
 }

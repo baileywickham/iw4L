@@ -836,6 +836,17 @@ pub struct XAnimPartsGeometry {
     pub indices_are_bytes: bool,
 
     pub delta_trans: XAnimDeltaTransGeometry,
+    pub delta_quat: XAnimDeltaQuatGeometry,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct XAnimDeltaQuatGeometry {
+    pub size: u16,
+    pub components: u8,
+    pub constant: Option<Ptr>,
+    pub frames: Option<Ptr>,
+    pub indices: Option<Ptr>,
+    pub indices_are_bytes: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -97,9 +97,20 @@ impl ScriptSources {
         })
     }
 
+    pub fn animtrees(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.configs.iter().filter_map(|(path, text)| {
+            let name = path.strip_prefix("animtrees/")?.strip_suffix(".atr")?;
+            Some((name, text.as_str()))
+        })
+    }
+
     pub(crate) fn capture(&mut self, name: &str, data: &[u8], compressed: bool) {
         let name = normalize(name);
-        if name.ends_with(".cfg") || name.ends_with(".shock") || name == "radiant/keys.txt" {
+        if name.ends_with(".cfg")
+            || name.ends_with(".shock")
+            || name.ends_with(".atr")
+            || name == "radiant/keys.txt"
+        {
             if let Some(text) = asset_world::decode_rawfile_text(data, compressed) {
                 self.configs.insert(name, text);
             }

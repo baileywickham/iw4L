@@ -1474,7 +1474,7 @@ fn register_refused(registry: &mut NativeRegistry) {
         "finishvehicledamage", "finishvehicleradiusdamage", "changeseatbuttonpressed",
         "setheliheightlock", "isinsideheliheightlock", "setviewclamp", "resetviewclamp",
         "returnplayercontrol", "setjitterparams", "heliturretdogtrace",
-        "heliturretsighttrace", "setanim", "useanimtree"
+        "heliturretsighttrace"
         => "receiver is not a vehicle");
 
     refused!(Method: "spawnactor", "setgoalnode", "setgoalpos",

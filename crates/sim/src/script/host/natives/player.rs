@@ -547,20 +547,6 @@ fn item_number(world: &World, receiver: &Value) -> Result<i32, String> {
     }
 }
 
-fn anim_clip(
-    world: &mut World,
-    args: &[Value],
-    index: usize,
-) -> Result<Arc<xmodel_runtime::AnimClip>, String> {
-    let name = match arg(args, index)? {
-        Value::Animation { name, .. } => name.clone(),
-        other => return Err(format!("{} is not an animation", kind(other))),
-    };
-    FrameWorld::from_world(world)
-        .player_anim_clip_named(&name)
-        .ok_or_else(|| format!("animation '{name}' is not loaded in the simulation"))
-}
-
 pub(crate) const SCAVENGER_ITEM_CLASS: &str = "scavenger_item";
 
 pub(crate) fn new_item_entity(
@@ -717,40 +703,6 @@ fn register_death(registry: &mut NativeRegistry) {
         corpse_anim(world, receiver)?;
         Ok(Value::Undefined)
     });
-    registry.register(
-        crate::script::Namespace::Function,
-        "getanimlength",
-        |world, _, args| Ok(Value::Float(anim_clip(world, args, 0)?.duration())),
-    );
-    registry.register(
-        crate::script::Namespace::Function,
-        "animhasnotetrack",
-        |world, _, args| {
-            let clip = anim_clip(world, args, 0)?;
-            let note = string(args, 1)?;
-            Ok(Value::Int(
-                clip.notifies
-                    .iter()
-                    .any(|n| n.name.eq_ignore_ascii_case(&note))
-                    .into(),
-            ))
-        },
-    );
-    registry.register(
-        crate::script::Namespace::Function,
-        "getnotetracktimes",
-        |world, _, args| {
-            let clip = anim_clip(world, args, 0)?;
-            let note = string(args, 1)?;
-            let times: Vec<Value> = clip
-                .notifies
-                .iter()
-                .filter(|n| n.name.eq_ignore_ascii_case(&note))
-                .map(|n| Value::Float(n.time))
-                .collect();
-            new_array(world, times)
-        },
-    );
     registry.register(Method, "dropitem", |world, receiver, args| {
         let id = client_of(world, receiver)?;
         let weapon = player_weapon(world, id, args, 0)?;

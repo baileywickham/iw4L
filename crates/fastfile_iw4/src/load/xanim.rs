@@ -34,8 +34,9 @@ pub(super) fn load_xanim(s: &mut ZoneStream<'_>, links: &mut dyn AssetLinkSink) 
     }
 
     let mut delta_trans = crate::XAnimDeltaTransGeometry::default();
+    let mut delta_quat = crate::XAnimDeltaQuatGeometry::default();
     if s.begin_body(p.at(s.layout(84, 128)))? {
-        delta_trans = load_delta_part(s, numframes)?;
+        (delta_trans, delta_quat) = load_delta_part(s, numframes)?;
     }
 
     let data_byte = s.plain_array(p, s.layout(52, 64), 1, 1, data_byte_count)?;
@@ -82,6 +83,7 @@ pub(super) fn load_xanim(s: &mut ZoneStream<'_>, links: &mut dyn AssetLinkSink) 
         index_count,
         indices_are_bytes: numframes < 256,
         delta_trans,
+        delta_quat,
     };
     links.capture_xanim(s, geometry)?;
 
@@ -91,20 +93,27 @@ pub(super) fn load_xanim(s: &mut ZoneStream<'_>, links: &mut dyn AssetLinkSink) 
 fn load_delta_part(
     s: &mut ZoneStream<'_>,
     numframes: u16,
-) -> Result<crate::XAnimDeltaTransGeometry> {
+) -> Result<(
+    crate::XAnimDeltaTransGeometry,
+    crate::XAnimDeltaQuatGeometry,
+)> {
     let p = s.alloc_load(4, s.layout(sz::XANIM_DELTA_PART, 24))?;
     let trans = if s.begin_body(p.at(0))? {
         load_part_trans(s, numframes)?
     } else {
         crate::XAnimDeltaTransGeometry::default()
     };
+    let mut quat = crate::XAnimDeltaQuatGeometry::default();
     if s.begin_body(p.at(s.layout(4, 8)))? {
-        load_delta_quat2(s, numframes)?;
+        quat = load_delta_quat(s, numframes, 2)?;
     }
     if s.begin_body(p.at(s.layout(8, 16)))? {
-        load_delta_quat(s, numframes)?;
+        let full = load_delta_quat(s, numframes, 4)?;
+        if quat.components == 0 {
+            quat = full;
+        }
     }
-    Ok(trans)
+    Ok((trans, quat))
 }
 
 fn load_part_trans(
@@ -154,36 +163,31 @@ fn load_part_trans(
     })
 }
 
-fn load_delta_quat2(s: &mut ZoneStream<'_>, numframes: u16) -> Result<()> {
+fn load_delta_quat(
+    s: &mut ZoneStream<'_>,
+    numframes: u16,
+    components: u8,
+) -> Result<crate::XAnimDeltaQuatGeometry> {
     let head = s.alloc_load(4, s.layout(4, 8))?;
     let size = s.u16_at(head, 0)?;
+    let bytes = 2 * components as usize;
+    let mut quat = crate::XAnimDeltaQuatGeometry {
+        size,
+        components,
+        indices_are_bytes: numframes < 256,
+        ..Default::default()
+    };
     if size == 0 {
-        s.alloc_load(2, 4)?;
-        return Ok(());
+        quat.constant = Some(s.alloc_load(2, bytes)?);
+        return Ok(quat);
     }
     let n = size as usize + 1;
     let fr = s.alloc_load(4, s.layout(4, 8))?;
-    load_dynamic_indices(s, numframes, n)?;
+    quat.indices = Some(load_dynamic_indices(s, numframes, n)?);
     if s.begin_body(fr.at(0))? {
-        s.alloc_load(4, 4 * n)?;
+        quat.frames = Some(s.alloc_load(4, bytes * n)?);
     }
-    Ok(())
-}
-
-fn load_delta_quat(s: &mut ZoneStream<'_>, numframes: u16) -> Result<()> {
-    let head = s.alloc_load(4, s.layout(4, 8))?;
-    let size = s.u16_at(head, 0)?;
-    if size == 0 {
-        s.alloc_load(2, 8)?;
-        return Ok(());
-    }
-    let n = size as usize + 1;
-    let fr = s.alloc_load(4, s.layout(4, 8))?;
-    load_dynamic_indices(s, numframes, n)?;
-    if s.begin_body(fr.at(0))? {
-        s.alloc_load(4, 8 * n)?;
-    }
-    Ok(())
+    Ok(quat)
 }
 
 fn load_dynamic_indices(s: &mut ZoneStream<'_>, numframes: u16, n: usize) -> Result<crate::Ptr> {

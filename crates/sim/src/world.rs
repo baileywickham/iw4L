@@ -264,6 +264,9 @@ pub struct SimContent {
 }
 
 impl SimContent {
+    pub(crate) fn script_anims(&self) -> &crate::script::host::animtree::ScriptAnimLibrary {
+        &self.data.script_anims
+    }
     pub fn clip_brushes(&self) -> &[SimBrush] {
         &self.data.clip_brushes
     }
@@ -310,6 +313,7 @@ pub struct SimContentBuilder {
     player_anim_properties: Vec<xmodel_runtime::PlayerAnimProperties>,
     player_body_branches: Option<xmodel_runtime::PlayerBodyBranches>,
     script_model_anims: std::collections::BTreeMap<String, crate::ScriptModelPlayAnim>,
+    script_anims: Arc<crate::script::host::animtree::ScriptAnimLibrary>,
     xanims: Arc<crate::MantleXAnimBind>,
     weapon_script_names: Arc<[String]>,
     weapon_script_aliases: std::collections::BTreeMap<String, u32>,
@@ -363,6 +367,10 @@ impl SimContentBuilder {
             .into_iter()
             .map(|(name, facts)| (name.to_ascii_lowercase(), facts))
             .collect();
+    }
+
+    pub fn set_script_anims(&mut self, library: crate::script::host::animtree::ScriptAnimLibrary) {
+        self.script_anims = Arc::new(library);
     }
 
     pub fn set_player_anim_script(&mut self, script: Option<Arc<PlayerAnimScript>>) {

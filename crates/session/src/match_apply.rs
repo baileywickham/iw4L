@@ -197,6 +197,23 @@ pub fn apply_prepared_match(
         .shocks()
         .map(|(name, text)| (name.to_owned(), text.to_owned()))
         .collect();
+    let mut animtrees: Vec<(String, String)> = prepared
+        .scripts
+        .animtrees()
+        .map(|(name, text)| (name.to_owned(), text.to_owned()))
+        .collect();
+    if let Some(dir) = std::env::var_os("IW4L_SCRIPT_OVERRIDE").filter(|dir| !dir.is_empty()) {
+        let dir = std::path::Path::new(&dir).join("animtrees");
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if let (Some(name), Ok(text)) = (
+                path.file_stem().filter(|_| path.extension().is_some_and(|e| e == "atr")),
+                std::fs::read_to_string(&path),
+            ) {
+                animtrees.push((name.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
 
     let plan = match preflight_match_install(
         prepared,
@@ -372,6 +389,11 @@ pub fn apply_prepared_match(
                 },
             ))
         }));
+        let script_xanims = std::sync::Arc::new(xanims.0.clone());
+        content.set_script_anims(sim::ScriptAnimLibrary::new(
+            animtrees,
+            std::sync::Arc::new(move |name: &str| script_xanims.clip(anim_namespace, name)),
+        ));
         content.set_mantle_xanims(sim::MantleXAnimBind::from_clips(|fast, i| {
             let name = sim::MantleXAnimBind::clip_name(fast, i)?;
             xanims

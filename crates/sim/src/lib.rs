@@ -35,6 +35,7 @@ pub use persistent_defaults::PlayerDataDefaults;
 mod presence;
 mod remote_missile;
 pub mod script;
+pub use script::host::animtree::{ScriptAnimLibrary, ScriptXAnimSource};
 mod weapon_lock;
 pub use weapon_lock::WeaponLock;
 pub mod player_anim_script;

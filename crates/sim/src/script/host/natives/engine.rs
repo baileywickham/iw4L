@@ -2123,8 +2123,6 @@ fn register_refused(registry: &mut NativeRegistry) {
             registry.register($namespace, $name, |_, _, _| Err($message.into()));
         )*};
     }
-    refused!(Function: "getanimlength", "animhasnotetrack", "getnotetracktimes"
-        => "animation data is not loaded in the simulation");
     refused!(Function: "getweaponmodel", "getweaponhidetags"
         => "weapon models are not loaded in the simulation");
     refused!(Method: "getcorpseanim", "startragdoll", "isragdoll" => "receiver is not a corpse");

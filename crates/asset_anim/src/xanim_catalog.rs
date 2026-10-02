@@ -9,7 +9,7 @@ use fastfile_iw4::{
 
 use crate::asset_graph::ZoneOwner;
 use crate::asset_key::AssetNamespace;
-use crate::xanim_clip::{AnimClip, ClipNotify, RawDeltaTrans, RawXAnimParts};
+use crate::xanim_clip::{AnimClip, ClipNotify, RawDeltaQuat, RawDeltaTrans, RawXAnimParts};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct XAnimKey {
@@ -403,6 +403,7 @@ impl XAnimBuild {
                     notifies,
                     indices,
                     delta_trans: None,
+                    delta_quat: None,
                 }),
             },
         );
@@ -496,6 +497,7 @@ impl XAnimBuild {
                     notifies,
                     indices,
                     delta_trans: None,
+                    delta_quat: None,
                 }),
             },
         );
@@ -579,6 +581,7 @@ impl AssetLinkSink for XAnimBuild {
             copy_u16(s, geometry.indices, geometry.index_count)
         };
         let delta_trans = copy_delta_trans(s, geometry.delta_trans);
+        let delta_quat = copy_delta_quat(s, geometry.delta_quat);
 
         self.insert_captured(CapturedXAnim {
             namespace: AssetNamespace::Iw4,
@@ -598,6 +601,7 @@ impl AssetLinkSink for XAnimBuild {
                 notifies,
                 indices,
                 delta_trans,
+                delta_quat,
             }),
         });
         let _ = geometry.frequency;
@@ -651,6 +655,39 @@ fn copy_f32_3(s: &ZoneStream<'_>, ptr: Ptr, off: usize) -> Option<[f32; 3]> {
         f32::from_le_bytes(bytes[4..8].try_into().ok()?),
         f32::from_le_bytes(bytes[8..12].try_into().ok()?),
     ])
+}
+
+fn copy_delta_quat(
+    s: &ZoneStream<'_>,
+    geo: fastfile_iw4::XAnimDeltaQuatGeometry,
+) -> Option<RawDeltaQuat> {
+    let components = geo.components as usize;
+    if components == 0 {
+        return None;
+    }
+    let to_i16 = |values: Vec<u16>| values.into_iter().map(|v| v as i16).collect();
+    if let Some(constant) = geo.constant {
+        return Some(RawDeltaQuat {
+            components: geo.components,
+            indices: Vec::new(),
+            values: to_i16(copy_u16(s, Some(constant), components)),
+        });
+    }
+    let n = geo.size as usize + 1;
+    let indices = if geo.indices_are_bytes {
+        copy_u8(s, geo.indices, n)
+            .into_iter()
+            .map(u16::from)
+            .collect()
+    } else {
+        copy_u16(s, geo.indices, n)
+    };
+    let values = to_i16(copy_u16(s, geo.frames, components * n));
+    (values.len() == components * n && indices.len() == n).then_some(RawDeltaQuat {
+        components: geo.components,
+        indices,
+        values,
+    })
 }
 
 fn copy_delta_trans(

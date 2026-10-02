@@ -38,7 +38,7 @@ pub use zone::{
     TECHNIQUE_ARGUMENT_CAP, TECHNIQUE_PASS_ROW_CAP, TechniqueArgumentGeometry,
     TechniqueGraphGeometry, TechniquePassGeometry, TechniqueSetGeometry, TracerDefGeometry,
     VehicleTrackGeometry, VertexDeclGeometry, WeaponGeometry, WeaponIdleCapture, WeaponKickCapture,
-    WeaponMovementOfsCapture, WeaponSwayCapture, XAnimDeltaTransGeometry, XAnimPartsGeometry,
+    WeaponMovementOfsCapture, WeaponSwayCapture, XAnimDeltaQuatGeometry, XAnimDeltaTransGeometry, XAnimPartsGeometry,
     XFILE_BLOCK_CALLBACK, XFILE_BLOCK_INDEX, XFILE_BLOCK_LARGE, XFILE_BLOCK_PHYSICAL,
     XFILE_BLOCK_RUNTIME, XFILE_BLOCK_TEMP, XFILE_BLOCK_VERTEX, XFILE_BLOCK_VIRTUAL,
     XFILE_HEADER_LEN, XModelGeometry, ZoneError, ZoneHeader, ZonePtr, ZoneStream,

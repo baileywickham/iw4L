@@ -1,3 +1,5 @@
+pub(crate) mod anim;
+pub mod animtree;
 pub mod args;
 pub mod arrays;
 pub mod client_effects;

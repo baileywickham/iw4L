@@ -312,6 +312,14 @@ impl XAnimTreeRuntime {
     }
 
     pub fn update(&mut self, dtime_seconds: f32) -> Result<(), XAnimTreeError> {
+        self.advance(dtime_seconds, false)
+    }
+
+    pub fn update_inherited_rate(&mut self, dtime_seconds: f32) -> Result<(), XAnimTreeError> {
+        self.advance(dtime_seconds, true)
+    }
+
+    fn advance(&mut self, dtime_seconds: f32, inherit_rate: bool) -> Result<(), XAnimTreeError> {
         if !dtime_seconds.is_finite() || dtime_seconds < 0.0 {
             return Err(XAnimTreeError::NonFiniteState { node: 0 });
         }
@@ -333,6 +341,21 @@ impl XAnimTreeRuntime {
             state.old_time = state.time;
             state.old_cycle_count = state.cycle_count;
         }
+        let mut rates: Vec<f32> = Vec::new();
+        if inherit_rate {
+            rates.reserve(n);
+            for node in 0..n {
+                let parent = self.definition.nodes[node].parent.map_or(1.0, |parent| {
+                    let parent = parent.0 as usize;
+                    if self.states[parent].weight == 0.0 {
+                        0.0
+                    } else {
+                        rates[parent]
+                    }
+                });
+                rates.push(parent * self.states[node].rate);
+            }
+        }
         for node in 0..n {
             if self.states[node].weight == 0.0 {
                 continue;
@@ -340,11 +363,12 @@ impl XAnimTreeRuntime {
             let XAnimNodeKind::Leaf { clip, .. } = &self.definition.nodes[node].kind else {
                 continue;
             };
+            let rate = rates.get(node).copied().unwrap_or(self.states[node].rate);
             let state = &mut self.states[node];
             let (time, cycle) = advance_leaf_time(
                 state.old_time,
                 state.cycle_count,
-                state.rate,
+                rate,
                 clip.frequency(),
                 dtime_seconds,
                 clip.looping,
