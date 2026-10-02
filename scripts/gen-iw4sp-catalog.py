@@ -8,9 +8,10 @@ import struct
 import sys
 
 ENTRY = 24
+MIN_TABLE = 3
 OWNER_BY_ANCHOR = {
     "startscriptedanim": ("Method", "Actor"),
-    "getenemysqdist": ("Method", "Actor"),
+    "getenemysqdist": ("Method", "Sentient"),
     "getviewmodel": ("Method", "Player"),
     "buttonpressed": ("Method", "Player"),
     "settext": ("Method", "HudElem"),
@@ -22,6 +23,7 @@ OWNER_BY_ANCHOR = {
     "createprintchannel": ("Function", "Script"),
     "iprintln": ("Function", "Script"),
     "objective_add": ("Function", "Script"),
+    "createthreatbiasgroup": ("Function", "Script"),
 }
 
 
@@ -70,7 +72,7 @@ def tables(d):
                     break
                 run.append((name, bool(dev)))
                 j += ENTRY
-            if len(run) >= 8:
+            if len(run) >= MIN_TABLE:
                 yield run
                 i = j
             else:

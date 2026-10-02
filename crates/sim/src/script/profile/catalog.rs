@@ -17,6 +17,7 @@ pub enum Owner {
     Helicopter,
     Vehicle,
     Actor,
+    Sentient,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
