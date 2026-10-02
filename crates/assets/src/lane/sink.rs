@@ -1087,6 +1087,12 @@ impl fastfile_t5::AssetLinkSink for ZoneWalkSink {
     asset_audio::forward_t5_sound!();
 }
 
+impl ZoneWalkSink {
+    pub(crate) fn script_strings(&self) -> ScriptStrings {
+        self.script_strings
+    }
+}
+
 impl AssetSink for ZoneWalkSink {
     fn set_script_strings(&mut self, strings: ScriptStrings) {
         self.fx_models.set_strings(strings.clone());

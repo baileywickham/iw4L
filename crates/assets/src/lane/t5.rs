@@ -463,6 +463,7 @@ impl ZoneLane for T5Lane {
                         max,
                         world_bounds,
                         policy: WorldDrawPolicy::t5(),
+                        ..Default::default()
                     },
                     collision: clip,
                     spawns: dm_spawns,

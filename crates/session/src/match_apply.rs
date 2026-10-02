@@ -268,6 +268,7 @@ pub fn apply_prepared_match(
             impact_fx,
             mut authority_models,
             model_spawns,
+            path_data,
         } = plan;
         let spawn_count = prepared_map.spawns.len();
 
@@ -474,6 +475,9 @@ pub fn apply_prepared_match(
         stage_resource(&mut install, DynEntPhysWorld::default());
         stage_resource(&mut install, DynEntPhysClip(clip.clone()));
         let brush_movers = std::mem::take(&mut authority_models.brush_movers);
+        if let Some(path) = path_data {
+            content.set_path_graph(sim_path_graph(path));
+        }
         let (sim_gap, lock_reasons) = install_clip_and_player(
             &mut sim,
             content,
@@ -746,6 +750,7 @@ struct MatchInstallPlan {
     impact_fx: PreparedImpactFx,
     authority_models: AuthorityEntityModelInstall,
     model_spawns: Vec<(sim::ScriptModelId, [f32; 3], [f32; 3])>,
+    path_data: Option<asset_world::PathData>,
 }
 
 /// A refusal of the whole request: the loading screen shows `error`, the swap
@@ -1159,6 +1164,7 @@ fn preflight_match_install(
     let fx_models = PreparedFxModels(std::mem::take(&mut prepared.world.fx_models));
     let impact_fx = PreparedImpactFx(std::mem::take(&mut prepared.world.impact_fx));
     let tracers = PreparedTracers(std::mem::take(&mut prepared.tracers));
+    let path_data = prepared.world.path_data.take();
     let scene = match world_scene_from_draw(
         prepared.world,
         prepared.materials,
@@ -1214,6 +1220,7 @@ fn preflight_match_install(
         impact_fx,
         authority_models,
         model_spawns,
+        path_data,
     })
 }
 
@@ -1489,6 +1496,61 @@ fn authority_entity_model_install(world: &assets::PreparedWorld) -> AuthorityEnt
         installed_owners,
         ambiguous_brush_links,
         standalone_brush_links,
+    }
+}
+
+fn sim_path_graph(path: asset_world::PathData) -> sim::SimPathGraph {
+    sim::SimPathGraph {
+        nodes: path
+            .nodes
+            .into_iter()
+            .map(|n| sim::SimPathNode {
+                node_type: n.node_type,
+                spawnflags: n.spawnflags,
+                targetname: n.targetname,
+                target: n.target,
+                script_noteworthy: n.script_noteworthy,
+                script_linkname: n.script_linkname,
+                animscript: n.animscript,
+                origin: n.origin,
+                angle: n.angle,
+                forward: n.forward,
+                radius: n.radius,
+                min_use_dist_sq: n.min_use_dist_sq,
+                links: n
+                    .links
+                    .into_iter()
+                    .map(|l| sim::SimPathLink {
+                        to: l.to,
+                        dist: l.dist,
+                        disconnect_count: l.disconnect_count,
+                        negotiation_link: l.negotiation_link,
+                        flags: l.flags,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        chain_node_count: path.chain_node_count,
+        chain_node_for_node: path.chain_node_for_node,
+        node_for_chain_node: path.node_for_chain_node,
+        vis: path.vis,
+        tree: path
+            .tree
+            .into_iter()
+            .map(|t| match t {
+                asset_world::PathTreeNode::Split {
+                    axis,
+                    dist,
+                    children,
+                } => sim::SimPathTreeNode::Split {
+                    axis,
+                    dist,
+                    children,
+                },
+                asset_world::PathTreeNode::Leaf { nodes } => sim::SimPathTreeNode::Leaf { nodes },
+            })
+            .collect(),
+        tree_roots: path.tree_roots,
     }
 }
 

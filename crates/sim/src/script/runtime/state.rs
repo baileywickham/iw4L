@@ -79,6 +79,7 @@ pub(crate) struct Runtime {
     pub(crate) finished: bool,
     pub(crate) pending_restart: Option<bool>,
     pub(crate) restored_pers: BTreeMap<u32, host::restart::Detached>,
+    pub(crate) path_nodes: Vec<Option<u64>>,
 }
 
 impl Runtime {

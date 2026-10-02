@@ -164,6 +164,18 @@ impl ZoneLane for Iw4Lane {
         if let Some(entities) = map_ents_entity_string(&stream) {
             scripts.set_entities(entities.to_owned());
         }
+        let path_data = asset_world::build_path_data(&stream, &sink.script_strings());
+        let vehicle_track = asset_world::build_vehicle_track(&stream);
+        let addon_entities = asset_world::addon_map_ents_entity_string(&stream).map(str::to_owned);
+        if let Some(path) = &path_data {
+            report.push(path.report_line());
+        }
+        if let Some(track) = &vehicle_track {
+            report.push(track.report_line());
+        }
+        if let Some(entities) = &addon_entities {
+            report.push(format!("addon mapents: {} chars", entities.len()));
+        }
         let script_sound = std::mem::take(&mut sink.script_sound).finish();
         let exp_fog = sink.exp_fog.take();
         let createart_name = sink.createart_name.take();
@@ -431,6 +443,9 @@ impl ZoneLane for Iw4Lane {
                     film_visions,
                     createart_name,
                     policy: WorldDrawPolicy::iw4(),
+                    path_data,
+                    vehicle_track,
+                    addon_entities,
                     ..Default::default()
                 },
                 collision: clip,
@@ -672,6 +687,9 @@ impl ZoneLane for Iw4Lane {
                         max,
                         world_bounds,
                         policy: WorldDrawPolicy::iw4(),
+                        path_data,
+                        vehicle_track,
+                        addon_entities,
                     },
                     collision: clip,
                     spawns: dm_spawns,
@@ -713,6 +731,9 @@ impl ZoneLane for Iw4Lane {
                         film_visions,
                         createart_name,
                         policy: WorldDrawPolicy::iw4(),
+                        path_data,
+                        vehicle_track,
+                        addon_entities,
                         ..Default::default()
                     },
                     collision: clip,

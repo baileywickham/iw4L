@@ -138,6 +138,10 @@ pub struct PreparedWorld {
 
     pub world_bounds: Option<[f32; 6]>,
     pub policy: WorldDrawPolicy,
+
+    pub path_data: Option<asset_world::PathData>,
+    pub vehicle_track: Option<asset_world::VehicleTrack>,
+    pub addon_entities: Option<String>,
 }
 
 #[derive(Default, Clone)]

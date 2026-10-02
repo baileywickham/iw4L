@@ -301,6 +301,61 @@ fn matching_entities(world: &mut World, args: &[Value]) -> Result<Vec<u64>, Stri
         .collect())
 }
 
+fn matching_path_nodes(world: &mut World, args: &[Value]) -> Result<Vec<usize>, String> {
+    let frame = crate::frame::FrameWorld::from_world(world);
+    let graph = frame.path_graph();
+    if graph.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value = string(args, 0)?;
+    let key = string(args, 1)?.to_ascii_lowercase();
+    graph.matching(&value, &key)
+}
+
+fn path_node_objects(world: &mut World, nodes: Vec<usize>) -> Result<Value, String> {
+    let values = nodes
+        .into_iter()
+        .map(|i| path_node_object(world, i))
+        .collect::<Result<Vec<_>, _>>()?;
+    new_array(world, values)
+}
+
+fn path_node_object(world: &mut World, index: usize) -> Result<Value, String> {
+    let cached = runtime(world).path_nodes.get(index).copied().flatten();
+    if let Some(id) = cached.filter(|id| world.resource::<Runtime>().live(id)) {
+        return Ok(Value::Object(id));
+    }
+    let node = crate::frame::FrameWorld::from_world(world)
+        .path_graph()
+        .nodes
+        .get(index)
+        .cloned()
+        .ok_or("path node out of range")?;
+    let mut runtime = runtime(world);
+    let id = runtime.new_object()?;
+    runtime.set_object_field(id, "origin", Value::Vector(node.origin));
+    runtime.set_object_field(id, "angles", Value::Vector(node.angles()));
+    runtime.set_object_field(id, "type", Value::string(node.type_name()));
+    runtime.set_object_field(id, "spawnflags", Value::Int(node.spawnflags.into()));
+    runtime.set_object_field(id, "radius", Value::Float(node.radius));
+    for key in [
+        "targetname",
+        "target",
+        "script_noteworthy",
+        "script_linkname",
+        "animscript",
+    ] {
+        if let Some(text) = node.key(key).filter(|t| !t.is_empty()) {
+            runtime.set_object_field(id, key, Value::string(text));
+        }
+    }
+    if runtime.path_nodes.len() <= index {
+        runtime.path_nodes.resize(index + 1, None);
+    }
+    runtime.path_nodes[index] = Some(id);
+    Ok(Value::Object(id))
+}
+
 fn classname_prefix(world: &World, ids: Vec<u64>, prefix: &str) -> Vec<u64> {
     let runtime = world.resource::<Runtime>();
     ids.into_iter()
@@ -752,6 +807,26 @@ fn register_entities(registry: &mut NativeRegistry) {
         let ids = matching_entities(world, args)?;
         let ids = classname_prefix(world, ids, "info_vehicle_node");
         objects(world, ids)
+    });
+    registry.register(Function, "getnode", |world, _, args| {
+        let nodes = matching_path_nodes(world, args)?;
+        if nodes.len() > 1 {
+            return Err("getnode used with more than one node".into());
+        }
+        nodes
+            .first()
+            .map_or(Ok(Value::Undefined), |&i| path_node_object(world, i))
+    });
+    registry.register(Function, "getnodearray", |world, _, args| {
+        let nodes = matching_path_nodes(world, args)?;
+        path_node_objects(world, nodes)
+    });
+    registry.register(Function, "getallnodes", |world, _, _| {
+        let count = crate::frame::FrameWorld::from_world(world)
+            .path_graph()
+            .nodes
+            .len();
+        path_node_objects(world, (0..count).collect())
     });
     registry.register(Function, "isspawner", |_, _, _| Ok(Value::Int(0)));
     registry.register(Function, "getteamplayersalive", |world, _, args| {

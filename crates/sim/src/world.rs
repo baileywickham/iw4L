@@ -276,6 +276,9 @@ impl SimContent {
     pub fn clip_cmodels(&self) -> &SimClipCmodels {
         &self.data.clip_cmodels
     }
+    pub fn path_graph(&self) -> &crate::SimPathGraph {
+        &self.data.path_graph
+    }
 }
 
 /// Installation work. Consuming this builder closes all definition writers.
@@ -324,9 +327,14 @@ pub struct SimContentBuilder {
     map_custom: std::collections::BTreeMap<String, String>,
     shocks: std::collections::BTreeMap<String, hud_iw4::ShockParams>,
     player_anim_script: Option<Arc<PlayerAnimScript>>,
+    path_graph: crate::SimPathGraph,
 }
 
 impl SimContentBuilder {
+    pub fn set_path_graph(&mut self, graph: crate::SimPathGraph) {
+        self.path_graph = graph;
+    }
+
     pub fn set_script_sound_aliases(
         &mut self,
         aliases: Option<std::collections::BTreeMap<String, Option<bool>>>,
@@ -1564,6 +1572,10 @@ impl SimState {
 
     pub fn clip_cmodels(&self) -> &SimClipCmodels {
         &self.content.data.clip_cmodels
+    }
+
+    pub fn path_graph(&self) -> &crate::SimPathGraph {
+        &self.content.data.path_graph
     }
 
     pub fn entity_kernel(&self) -> &crate::gentity::EntityKernel {

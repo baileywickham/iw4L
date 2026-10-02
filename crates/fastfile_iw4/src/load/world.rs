@@ -4,7 +4,8 @@ use super::{AssetLinkSink, asset_ptr_at, asset_ptr_at_linked, copy_linked_materi
 use crate::asset_type::AssetType;
 use crate::zone::{
     ComWorldGeometry, FxWorldGeometry, GfxLightDefGeometry, GlassDataGeometry, MapEntsGeometry,
-    Ptr, Result, XFILE_BLOCK_RUNTIME, XFILE_BLOCK_VIRTUAL, ZonePtr, ZoneStream,
+    PathDataGeometry, Ptr, Result, VehicleTrackGeometry, XFILE_BLOCK_RUNTIME, XFILE_BLOCK_VIRTUAL,
+    ZonePtr, ZoneStream,
 };
 
 pub(super) fn load_comworld(s: &mut ZoneStream<'_>) -> Result<()> {
@@ -177,80 +178,36 @@ pub(super) fn load_gameworld_mp(s: &mut ZoneStream<'_>) -> Result<()> {
     s.push(XFILE_BLOCK_VIRTUAL)?;
     follow_name(s, p, 0)?;
 
-    let mut geometry = GlassDataGeometry::default();
-    if s.begin_body(p.at(s.layout(4, 8)))? {
-        let glass = s.alloc_load(4, s.layout(sz::G_GLASS_DATA, 144))?;
-        let piece_count = s.u32_at(glass, s.layout(4, 8))? as usize;
-        let name_count = s.u32_at(glass, s.layout(12, 16))? as usize;
-        let pieces = s.plain_array(glass, 0, 4, sz::G_GLASS_PIECE, piece_count)?;
-        let names = if s.begin_body(glass.at(s.layout(16, 24)))? {
-            let arr = s.alloc_load(4, s.layout(sz::G_GLASS_NAME, 24) * name_count)?;
-            for i in 0..name_count {
-                let g = arr.at(i * s.layout(sz::G_GLASS_NAME, 24));
-                follow_name(s, g, 0)?;
-                let count = s.u16_at(g, s.layout(6, 10))? as usize;
-                s.plain_array(g, s.layout(8, 16), 2, 2, count)?;
-            }
-            Some(arr)
-        } else {
-            match s.ptr_at(glass, s.layout(16, 24))? {
-                ZonePtr::Offset(q) => Some(s.resolve_alias(q)),
-                _ => None,
-            }
-        };
-        geometry = GlassDataGeometry {
-            data: Some(glass),
-            piece_count,
-            name_count,
-            pieces,
-            names,
-        };
-    } else if let ZonePtr::Offset(q) = s.ptr_at(p, s.layout(4, 8))? {
-        let glass = s.resolve_alias(q);
-        geometry = GlassDataGeometry {
-            data: Some(glass),
-            piece_count: s.u32_at(glass, s.layout(4, 8))? as usize,
-            name_count: s.u32_at(glass, s.layout(12, 16))? as usize,
-            pieces: match s.ptr_at(glass, 0)? {
-                ZonePtr::Offset(pp) => Some(s.resolve_alias(pp)),
-                _ => None,
-            },
-            names: match s.ptr_at(glass, s.layout(16, 24))? {
-                ZonePtr::Offset(nn) => Some(s.resolve_alias(nn)),
-                _ => None,
-            },
-        };
-    }
+    let geometry = load_g_glass_data(s, p, s.layout(4, 8))?;
     s.record_g_glass_data(geometry);
 
     s.pop()
 }
 
-/// `GameWorldSp`: name + inline `PathData` + inline `VehicleTrack` + glass ptr.
-///
-/// Only the stream advance matters here (single-player pathfinding and
-/// vehicle data the runtime never consumes): node `Links`, tree children and
-/// track branches are walked so the cursor lands past the asset. Script
-/// strings inside `pathnode_constant_t` are u16 indices, never followed.
 pub(super) fn load_gameworld_sp(s: &mut ZoneStream<'_>) -> Result<()> {
     let p = s.alloc_load(4, s.layout(sz::GAME_WORLD_SP, 112))?;
     s.push(XFILE_BLOCK_VIRTUAL)?;
     follow_name(s, p, 0)?;
 
-    load_path_data(s, p.at(s.layout(4, 8)))?;
-    load_vehicle_track(s, p.at(s.layout(44, 88)))?;
-    load_glass_ptr(s, p, s.layout(48, 104))?;
+    let path = load_path_data(s, p.at(s.layout(4, 8)))?;
+    s.record_path_data(path);
+    let track = load_vehicle_track(s, p.at(s.layout(44, 88)))?;
+    s.record_vehicle_track(track);
+    let glass = load_g_glass_data(s, p, s.layout(52, 104))?;
+    s.record_g_glass_data(glass);
 
     s.pop()
 }
 
-fn load_path_data(s: &mut ZoneStream<'_>, path: Ptr) -> Result<()> {
+fn load_path_data(s: &mut ZoneStream<'_>, path: Ptr) -> Result<PathDataGeometry> {
     let node_count = s.u32_at(path, 0)? as usize;
+    let chain_node_count = s.u32_at(path, s.layout(12, 24))? as usize;
     let vis_bytes = s.i32_at(path, s.layout(24, 48))?.max(0) as usize;
     let tree_count = s.i32_at(path, s.layout(32, 64))?.max(0) as usize;
     let node_stride = s.layout(sz::PATH_NODE, 168);
 
-    if let Some(nodes) = s.follow_array(path, s.layout(4, 8), 4, node_stride, node_count)? {
+    let nodes = s.follow_array(path, s.layout(4, 8), 4, node_stride, node_count)?;
+    if let Some(nodes) = nodes {
         let link_field = s.layout(60, 64);
         for i in 0..node_count {
             let node = nodes.at(i * node_stride);
@@ -262,22 +219,28 @@ fn load_path_data(s: &mut ZoneStream<'_>, path: Ptr) -> Result<()> {
     // basenodes live in the runtime block: zero-filled, no stream bytes.
     runtime_array(s, path, s.layout(8, 16), 16, sz::PATH_BASENODE, node_count)?;
 
-    s.plain_array(path, s.layout(12, 32), 2, 2, node_count)?;
-    s.plain_array(path, s.layout(16, 40), 2, 2, node_count)?;
-    s.plain_array(path, s.layout(20, 56), 1, 1, vis_bytes)?;
+    let chain_node_for_node = s.plain_array(path, s.layout(16, 32), 2, 2, node_count)?;
+    let node_for_chain_node = s.plain_array(path, s.layout(20, 40), 2, 2, node_count)?;
+    let vis = s.plain_array(path, s.layout(28, 56), 1, 1, vis_bytes)?;
 
-    if let Some(tree) = s.follow_array(
-        path,
-        s.layout(28, 72),
-        4,
-        s.layout(sz::PATHNODE_TREE, 24),
-        tree_count,
-    )? {
+    let tree_stride = s.layout(sz::PATHNODE_TREE, 24);
+    let tree = s.follow_array(path, s.layout(36, 72), 4, tree_stride, tree_count)?;
+    if let Some(tree) = tree {
         for i in 0..tree_count {
-            load_pathnode_tree(s, tree.at(i * s.layout(sz::PATHNODE_TREE, 24)))?;
+            load_pathnode_tree(s, tree.at(i * tree_stride))?;
         }
     }
-    Ok(())
+    Ok(PathDataGeometry {
+        nodes,
+        node_count,
+        chain_node_count,
+        chain_node_for_node,
+        node_for_chain_node,
+        vis,
+        vis_bytes,
+        tree,
+        tree_count,
+    })
 }
 
 fn load_pathnode_tree(s: &mut ZoneStream<'_>, t: Ptr) -> Result<()> {
@@ -286,8 +249,10 @@ fn load_pathnode_tree(s: &mut ZoneStream<'_>, t: Ptr) -> Result<()> {
     if axis >= 0 {
         let width = s.pointer_bytes();
         for k in 0..2 {
-            if s.begin_body(t.at(union_off + k * width))? {
+            let slot = t.at(union_off + k * width);
+            if s.begin_body(slot)? {
                 let child = s.alloc_load(4, s.layout(sz::PATHNODE_TREE, 24))?;
+                s.fixup_slot(slot, child)?;
                 load_pathnode_tree(s, child)?;
             }
         }
@@ -298,20 +263,19 @@ fn load_pathnode_tree(s: &mut ZoneStream<'_>, t: Ptr) -> Result<()> {
     Ok(())
 }
 
-fn load_vehicle_track(s: &mut ZoneStream<'_>, track: Ptr) -> Result<()> {
+fn load_vehicle_track(s: &mut ZoneStream<'_>, track: Ptr) -> Result<VehicleTrackGeometry> {
     let segment_count = s.u32_at(track, s.layout(4, 8))? as usize;
-    if let Some(segments) = s.follow_array(
-        track,
-        0,
-        4,
-        s.layout(sz::VEHICLE_SEGMENT, 72),
-        segment_count,
-    )? {
+    let stride = s.layout(sz::VEHICLE_SEGMENT, 72);
+    let segments = s.follow_array(track, 0, 4, stride, segment_count)?;
+    if let Some(segments) = segments {
         for i in 0..segment_count {
-            load_vehicle_segment(s, segments.at(i * s.layout(sz::VEHICLE_SEGMENT, 72)))?;
+            load_vehicle_segment(s, segments.at(i * stride))?;
         }
     }
-    Ok(())
+    Ok(VehicleTrackGeometry {
+        segments,
+        segment_count,
+    })
 }
 
 fn load_vehicle_segment(s: &mut ZoneStream<'_>, seg: Ptr) -> Result<()> {
@@ -350,8 +314,10 @@ fn load_vehicle_segment(s: &mut ZoneStream<'_>, seg: Ptr) -> Result<()> {
             branch_count,
         )? {
             for k in 0..branch_count {
-                if s.begin_body(branches.at(k * s.pointer_bytes()))? {
+                let slot = branches.at(k * s.pointer_bytes());
+                if s.begin_body(slot)? {
                     let target = s.alloc_load(4, s.layout(sz::VEHICLE_SEGMENT, 72))?;
+                    s.fixup_slot(slot, target)?;
                     load_vehicle_segment(s, target)?;
                 }
             }
@@ -360,25 +326,52 @@ fn load_vehicle_segment(s: &mut ZoneStream<'_>, seg: Ptr) -> Result<()> {
     Ok(())
 }
 
-fn load_glass_ptr(s: &mut ZoneStream<'_>, p: Ptr, field: usize) -> Result<()> {
-    if !s.begin_body(p.at(field))? {
-        return Ok(());
+fn load_g_glass_data(s: &mut ZoneStream<'_>, p: Ptr, field: usize) -> Result<GlassDataGeometry> {
+    let mut geometry = GlassDataGeometry::default();
+    if s.begin_body(p.at(field))? {
+        let glass = s.alloc_load(4, s.layout(sz::G_GLASS_DATA, 144))?;
+        let piece_count = s.u32_at(glass, s.layout(4, 8))? as usize;
+        let name_count = s.u32_at(glass, s.layout(12, 16))? as usize;
+        let pieces = s.plain_array(glass, 0, 4, sz::G_GLASS_PIECE, piece_count)?;
+        let names = if s.begin_body(glass.at(s.layout(16, 24)))? {
+            let arr = s.alloc_load(4, s.layout(sz::G_GLASS_NAME, 24) * name_count)?;
+            for i in 0..name_count {
+                let g = arr.at(i * s.layout(sz::G_GLASS_NAME, 24));
+                follow_name(s, g, 0)?;
+                let count = s.u16_at(g, s.layout(6, 10))? as usize;
+                s.plain_array(g, s.layout(8, 16), 2, 2, count)?;
+            }
+            Some(arr)
+        } else {
+            match s.ptr_at(glass, s.layout(16, 24))? {
+                ZonePtr::Offset(q) => Some(s.resolve_alias(q)),
+                _ => None,
+            }
+        };
+        geometry = GlassDataGeometry {
+            data: Some(glass),
+            piece_count,
+            name_count,
+            pieces,
+            names,
+        };
+    } else if let ZonePtr::Offset(q) = s.ptr_at(p, field)? {
+        let glass = s.resolve_alias(q);
+        geometry = GlassDataGeometry {
+            data: Some(glass),
+            piece_count: s.u32_at(glass, s.layout(4, 8))? as usize,
+            name_count: s.u32_at(glass, s.layout(12, 16))? as usize,
+            pieces: match s.ptr_at(glass, 0)? {
+                ZonePtr::Offset(pp) => Some(s.resolve_alias(pp)),
+                _ => None,
+            },
+            names: match s.ptr_at(glass, s.layout(16, 24))? {
+                ZonePtr::Offset(nn) => Some(s.resolve_alias(nn)),
+                _ => None,
+            },
+        };
     }
-    let glass = s.alloc_load(4, s.layout(sz::G_GLASS_DATA, 144))?;
-    let piece_count = s.u32_at(glass, s.layout(4, 8))? as usize;
-    let name_count = s.u32_at(glass, s.layout(12, 16))? as usize;
-    s.plain_array(glass, 0, 4, sz::G_GLASS_PIECE, piece_count)?;
-    if s.begin_body(glass.at(s.layout(16, 24)))? {
-        let stride = s.layout(sz::G_GLASS_NAME, 24);
-        let names = s.alloc_load(4, stride * name_count)?;
-        for i in 0..name_count {
-            let g = names.at(i * stride);
-            follow_name(s, g, 0)?;
-            let count = s.u16_at(g, s.layout(6, 10))? as usize;
-            s.plain_array(g, s.layout(8, 16), 2, 2, count)?;
-        }
-    }
-    Ok(())
+    Ok(geometry)
 }
 
 /// `AddonMapEnts`: the `MapEnts` head (name, entity string, triggers) with no
@@ -389,15 +382,30 @@ pub(super) fn load_addonmapents(s: &mut ZoneStream<'_>) -> Result<()> {
 
     s.push(XFILE_BLOCK_VIRTUAL)?;
     follow_name(s, p, 0)?;
-    s.plain_array(p, s.layout(4, 8), 1, 1, entity_chars)?;
+    let entity_string = s.plain_array(p, s.layout(4, 8), 1, 1, entity_chars)?;
 
     let triggers = p.at(s.layout(12, 24));
     let model_count = s.i32_at(triggers, 0)?.max(0) as usize;
     let hull_count = s.i32_at(triggers, s.layout(8, 16))?.max(0) as usize;
     let slab_count = s.i32_at(triggers, s.layout(16, 32))?.max(0) as usize;
-    s.plain_array(triggers, s.layout(4, 8), 4, sz::TRIGGER_MODEL, model_count)?;
-    s.plain_array(triggers, s.layout(12, 24), 4, sz::TRIGGER_HULL, hull_count)?;
-    s.plain_array(triggers, s.layout(20, 40), 4, sz::TRIGGER_SLAB, slab_count)?;
+    let trigger_models =
+        s.plain_array(triggers, s.layout(4, 8), 4, sz::TRIGGER_MODEL, model_count)?;
+    let trigger_hulls =
+        s.plain_array(triggers, s.layout(12, 24), 4, sz::TRIGGER_HULL, hull_count)?;
+    let trigger_slabs =
+        s.plain_array(triggers, s.layout(20, 40), 4, sz::TRIGGER_SLAB, slab_count)?;
+    s.record_addon_map_ents(MapEntsGeometry {
+        entity_string,
+        entity_chars,
+        trigger_models,
+        trigger_model_count: model_count,
+        trigger_hulls,
+        trigger_hull_count: hull_count,
+        trigger_slabs,
+        trigger_slab_count: slab_count,
+        stages: None,
+        stage_count: 0,
+    });
 
     s.pop()
 }

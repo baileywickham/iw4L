@@ -21,6 +21,8 @@ mod local_profile;
 pub use local_profile::LocalPlayerProfile;
 mod mantle_xanim;
 pub mod match_state;
+mod path_graph;
+pub use path_graph::{SimPathGraph, SimPathLink, SimPathNode, SimPathTreeNode};
 mod missile;
 mod missile_guidance;
 pub use missile_guidance::{MissileGuide, MissileTarget};

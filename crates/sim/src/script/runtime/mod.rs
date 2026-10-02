@@ -1599,6 +1599,12 @@ impl Runtime {
     /// they reference alive exactly like a script variable would.
     fn native_roots(&self, pending: &mut Vec<Value>) {
         pending.extend(self.presented.values().flatten().cloned());
+        pending.extend(
+            self.path_nodes
+                .iter()
+                .flatten()
+                .map(|id| Value::Object(*id)),
+        );
         for (receiver, _, args) in &self.pending_notifies {
             pending.push(receiver.clone());
             pending.extend(args.iter().cloned());

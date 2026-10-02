@@ -637,6 +637,25 @@ pub struct MapEntsGeometry {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PathDataGeometry {
+    pub nodes: Option<Ptr>,
+    pub node_count: usize,
+    pub chain_node_count: usize,
+    pub chain_node_for_node: Option<Ptr>,
+    pub node_for_chain_node: Option<Ptr>,
+    pub vis: Option<Ptr>,
+    pub vis_bytes: usize,
+    pub tree: Option<Ptr>,
+    pub tree_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VehicleTrackGeometry {
+    pub segments: Option<Ptr>,
+    pub segment_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClipMapGeometry {
     pub name: Option<Ptr>,
     pub plane_count: usize,
@@ -1412,6 +1431,9 @@ pub struct ZoneStream<'a> {
     glass_data: Option<GlassDataGeometry>,
     clip_map: Option<ClipMapGeometry>,
     map_ents: Option<MapEntsGeometry>,
+    addon_map_ents: Option<MapEntsGeometry>,
+    path_data: Option<PathDataGeometry>,
+    vehicle_track: Option<VehicleTrackGeometry>,
     xmodel: Option<XModelGeometry>,
     phys_preset: Option<PhysPresetGeometry>,
     weapon: Option<WeaponGeometry>,
@@ -1517,6 +1539,9 @@ impl<'a> ZoneStream<'a> {
             glass_data: None,
             clip_map: None,
             map_ents: None,
+            addon_map_ents: None,
+            path_data: None,
+            vehicle_track: None,
             xmodel: None,
             phys_preset: None,
             weapon: None,
@@ -2083,6 +2108,30 @@ impl<'a> ZoneStream<'a> {
 
     pub fn map_ents(&self) -> Option<MapEntsGeometry> {
         self.map_ents
+    }
+
+    pub fn record_addon_map_ents(&mut self, geometry: MapEntsGeometry) {
+        self.addon_map_ents = Some(geometry);
+    }
+
+    pub fn addon_map_ents(&self) -> Option<MapEntsGeometry> {
+        self.addon_map_ents
+    }
+
+    pub fn record_path_data(&mut self, geometry: PathDataGeometry) {
+        self.path_data = Some(geometry);
+    }
+
+    pub fn path_data(&self) -> Option<PathDataGeometry> {
+        self.path_data
+    }
+
+    pub fn record_vehicle_track(&mut self, geometry: VehicleTrackGeometry) {
+        self.vehicle_track = Some(geometry);
+    }
+
+    pub fn vehicle_track(&self) -> Option<VehicleTrackGeometry> {
+        self.vehicle_track
     }
 
     pub fn record_xmodel(&mut self, geometry: XModelGeometry) {
