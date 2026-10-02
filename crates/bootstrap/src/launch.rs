@@ -491,6 +491,10 @@ fn run_map(
                 },
                 resolution: (ACCEPTANCE_WIDTH, ACCEPTANCE_HEIGHT).into(),
                 present_mode,
+                window_level: match std::env::var("IW4L_WINDOW_ON_TOP").is_ok_and(|v| v == "1") {
+                    true => bevy::window::WindowLevel::AlwaysOnTop,
+                    false => bevy::window::WindowLevel::Normal,
+                },
                 ..default()
             }),
             ..default()
