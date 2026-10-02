@@ -2,7 +2,7 @@
 
 Goal: add MW2's **Spec Ops** to [IW4L](https://github.com/vladtrc/iw4L), the from-scratch Rust rewrite of MW2, *properly*: the original `so_*` missions running their own GSC scripts on a real single-player actor (AI) system. Not the shortcut of using IW4L's MP bots as enemies on MP maps with hand-written missions.
 
-Status: implementation started 2026-10-02 on branch `spec-ops` of the fork `baileywickham/iw4L` (upstream `vladtrc/iw4L` is the `upstream` remote; no plan to merge back). Builds on macOS arm64. No game data on the dev Mac yet, so nothing below has run against a real zone.
+Status: implementation started 2026-10-02 on branch `spec-ops` of the fork `baileywickham/iw4L` (upstream `vladtrc/iw4L` is the `upstream` remote; no plan to merge back). Builds and runs on macOS arm64 (M4 Pro, Metal).
 
 ## Base to build on
 
@@ -102,3 +102,13 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
 - **B3.** First AI-free mission (The Pit) with `IW4L_GSC_STUB_NATIVES=1` + overrides; bind natives until it plays (milestone 3).
 - **B4.** Actor core (milestone 4): `EntityKind::Actor`, `host/actors.rs` field branch before the generic map (`runtime/mod.rs:911-980`), path-graph A*, goal/cover, perception, shooting, animtree; run `animscripts`.
 - **B5/B6.** Co-op mode, then breadth (milestones 5–6).
+
+## Progress log
+
+**2026-10-02**
+- Game data: Windows depots fetched through the Steam client console (`download_depot 10180 10181/10182/10183`, `10190 10184`) and merged into `~/Games/MW2` (12 GB). Depots 10186/10196 report "no license" and are not needed: 10183 (`zone/english`) carries MP, SP and all 23 `so_*` zones. Not `steamcmd`: the Homebrew cask is broken on this macOS; Valve's standalone tarball works but needs its own login.
+- Milestone 0 done: `map mp_boneyard` spawns and renders on the Mac.
+- macOS gotcha: an occluded window or locked screen gets no drawable, so world spawn's GPU gate waits forever (looked like a hang; upstream too). Now logged as `window surface: no frame to draw`; `IW4L_WINDOW_ON_TOP=1` keeps the window presented during scripted runs.
+- SP base maps walk with the existing IW4 lane. Bare names alias to `mp_` first (`favela` → `mp_favela`); `iw4:favela` now means the exact SP zone. Path data verified on real zones: trainer 94 nodes / 534 links, favela 2270, cliffhanger 2866 (+1 vehicle track, 41 sectors), estate 3041, so_bridge 720.
+- **Spec Ops zones are add-ons.** `so_<mission>_<basemap>` holds no world: `so_killspree_trainer` (7 MB) = Sound 388, Localize 33, TechniqueSet 25, MenuList 5, Material 4, RawFile 3, XModel 2, AddonMapEnts 1, on top of `trainer.ff` (117 MB). A mission load is base map + mission overlay.
+- Known gaps: SP `estate` produces no GfxWorld draw product; running MP gametype scripts on an SP map never spawns the player (not the target path — SO uses its own startup and spawn).
