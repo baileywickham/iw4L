@@ -87,7 +87,7 @@ pub struct HostCheats(pub bool);
 pub struct HostGameModeSelection(GameModeKind);
 
 impl HostGameModeSelection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self(GameModeKind::FreeForAll),
         Self(GameModeKind::Domination),
         Self(GameModeKind::Demolition),
@@ -96,6 +96,7 @@ impl HostGameModeSelection {
         Self(GameModeKind::CaptureTheFlag),
         Self(GameModeKind::Headquarters),
         Self(GameModeKind::Sabotage),
+        Self(GameModeKind::SpecOps),
     ];
 
     pub fn from_token(token: &str) -> Option<Self> {

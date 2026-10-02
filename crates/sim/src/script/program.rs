@@ -18,6 +18,15 @@ pub enum Realm {
     Iw4,
     Iw5,
     T5,
+    Iw4Sp,
+}
+impl Realm {
+    pub fn weapons(self) -> Self {
+        match self {
+            Self::Iw4Sp => Self::Iw4,
+            realm => realm,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -39,6 +48,7 @@ pub struct Program {
     pub(crate) natives: Vec<Builtin>,
     pub(crate) rules: Realm,
     pub(crate) impure_scripts: bool,
+    pub(crate) stub_natives: bool,
 }
 impl Program {
     pub fn load(

@@ -975,17 +975,29 @@ fn preflight_match_install(
             return Err(InstallRefusal::with_gap(gap, gap));
         }
     };
-    struct Sources(assets::ScriptSources);
+    struct Sources(assets::ScriptSources, Option<sim::script::FileSources>);
+    impl Sources {
+        fn overrides(&self, module: &str) -> Option<&sim::script::FileSources> {
+            self.1
+                .as_ref()
+                .filter(|dir| dir.0.join(format!("{module}.gsc")).is_file())
+        }
+    }
     impl sim::script::SourceResolver for Sources {
         fn read(&self, module: &str) -> Result<String, String> {
-            self.0
-                .read(module)
+            self.read_bytes(module)
                 .map(|bytes| sim::script::decode_source(&bytes))
         }
         fn read_bytes(&self, module: &str) -> Result<Vec<u8>, String> {
-            self.0.read(module)
+            match self.overrides(module) {
+                Some(dir) => sim::script::SourceResolver::read_bytes(dir, module),
+                None => self.0.read(module),
+            }
         }
         fn origin(&self, module: &str) -> sim::script::SourceOrigin {
+            if self.overrides(module).is_some() {
+                return sim::script::SourceOrigin::External;
+            }
             match self.0.origin(module) {
                 Some(assets::ScriptSourceOrigin::Packaged) => sim::script::SourceOrigin::Packaged,
                 Some(assets::ScriptSourceOrigin::BuiltIn) => sim::script::SourceOrigin::BuiltIn,
@@ -993,32 +1005,42 @@ fn preflight_match_install(
             }
         }
     }
-    let sources = Sources(std::mem::take(&mut prepared.scripts));
-    let gametype = kind
-        .script_tokens()
-        .iter()
-        .copied()
-        .find(|token| {
-            sources
-                .0
-                .read(&format!("maps/mp/gametypes/{token}"))
+    let script_override = std::env::var_os("IW4L_SCRIPT_OVERRIDE")
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| sim::script::FileSources(dir.into()));
+    if let Some(dir) = &script_override {
+        diag::info!(Sim, "gsc: script override dir={}", dir.0.display());
+    }
+    let sources = Sources(std::mem::take(&mut prepared.scripts), script_override);
+    let specops = kind == gamemode_iw4::GameModeKind::SpecOps || zone.starts_with("so_");
+    let gametype = match specops {
+        true => gamemode_iw4::GameModeKind::SpecOps.token(),
+        false => kind
+            .script_tokens()
+            .iter()
+            .copied()
+            .find(|token| {
+                sim::script::SourceResolver::read_bytes(
+                    &sources,
+                    &format!("maps/mp/gametypes/{token}"),
+                )
                 .is_ok()
-        })
-        .unwrap_or(kind.token());
-    let account_defaults =
-        sources
-            .0
-            .config("mp/stats_init.cfg")
-            .map(|config| sim::PlayerDataDefaults {
-                config: config.to_owned(),
-                class_names: std::array::from_fn(|index| {
-                    let key = format!("CLASS_SLOT{}", index + 1);
-                    strings
-                        .raw_text(&key)
-                        .filter(|bytes| bytes.first().is_some_and(|byte| *byte != 0))
-                        .map_or_else(|| key.into_bytes(), |bytes| bytes.to_vec())
-                }),
-            });
+            })
+            .unwrap_or(kind.token()),
+    };
+    let account_defaults = (!specops)
+        .then(|| sources.0.config("mp/stats_init.cfg"))
+        .flatten()
+        .map(|config| sim::PlayerDataDefaults {
+            config: config.to_owned(),
+            class_names: std::array::from_fn(|index| {
+                let key = format!("CLASS_SLOT{}", index + 1);
+                strings
+                    .raw_text(&key)
+                    .filter(|bytes| bytes.first().is_some_and(|byte| *byte != 0))
+                    .map_or_else(|| key.into_bytes(), |bytes| bytes.to_vec())
+            }),
+        });
     let keys = match sources.0.config("radiant/keys.txt") {
         Some(text) => sim::script::parse_radiant_keys(text).unwrap_or_else(|error| {
             diag::warn!(Sim, "gsc: radiant/keys.txt: {error}");
@@ -1051,10 +1073,28 @@ fn preflight_match_install(
             })
             .collect(),
     };
-    let startup = sim::script::Iw4Startup::new(&sources, gametype, zone);
-    let roots: Vec<&str> = startup.roots.iter().map(String::as_str).collect();
-    let scripts = sim::script::Program::load(&sources, &roots, &sim::script::Catalog::iw4())
-        .map_err(|e| script_refusal(zone, gametype, "compile", &e))?;
+    let (startup_roots, startup_entries, script_catalog) = match specops {
+        true => {
+            let startup = sim::script::Iw4SpStartup::new(zone);
+            (
+                startup.roots,
+                startup.entries,
+                sim::script::Catalog::iw4sp(),
+            )
+        }
+        false => {
+            let startup = sim::script::Iw4Startup::new(&sources, gametype, zone);
+            (startup.roots, startup.entries, sim::script::Catalog::iw4())
+        }
+    };
+    let roots: Vec<&str> = startup_roots.iter().map(String::as_str).collect();
+    let stub_natives = std::env::var("IW4L_GSC_STUB_NATIVES").is_ok_and(|value| value == "1");
+    let scripts = sim::script::Program::load(
+        &sources,
+        &roots,
+        &script_catalog.with_native_stubs(stub_natives),
+    )
+    .map_err(|e| script_refusal(zone, gametype, "compile", &e))?;
     let config = sources
         .0
         .config(MATCH_CONFIG)
@@ -1081,6 +1121,9 @@ fn preflight_match_install(
     {
         script_dvars.push(("onlinegame".into(), "1".into()));
     }
+    if specops {
+        script_dvars.push(("specialops".into(), "1".into()));
+    }
     script_dvars.push(("mapname".into(), zone.to_owned()));
     script_dvars.push(("g_gametype".into(), gametype.to_owned()));
     script_dvars.push(("sv_maxclients".into(), "18".into()));
@@ -1101,7 +1144,7 @@ fn preflight_match_install(
         );
     }
     script_dvars.extend(script_dvar_overrides());
-    let script_entries = startup.entries;
+    let script_entries = startup_entries;
     let authority_models = authority_entity_model_install(&prepared.world);
     let model_spawns = script_model_spawns(&prepared.world.script_model_instances);
     let fx_catalog = PreparedFxCatalog(std::mem::take(&mut prepared.fx));
@@ -1632,12 +1675,13 @@ fn install_clip_and_player(
             .and_then(|s| s.parse().ok())
             .unwrap_or(match kind {
                 gamemode_iw4::GameModeKind::Domination => gamemode_iw4::dom::SCORE_LIMIT,
-                gamemode_iw4::GameModeKind::Demolition => 0,
+                gamemode_iw4::GameModeKind::Demolition | gamemode_iw4::GameModeKind::SpecOps => 0,
                 _ => sim::FFA.score_limit,
             }),
         time_limit_ms: match kind {
             gamemode_iw4::GameModeKind::Domination => gamemode_iw4::dom::TIME_LIMIT_MS,
             gamemode_iw4::GameModeKind::Demolition => gamemode_iw4::dd::TIME_LIMIT_MS,
+            gamemode_iw4::GameModeKind::SpecOps => 0,
             _ => sim::FFA.time_limit_ms,
         },
         allow_debug_actions,

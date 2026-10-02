@@ -849,7 +849,14 @@ fn instruction(
                         native(world, &receiver, &args)
                     }))
                     .unwrap_or_else(|_| Err("builtin panicked".into()))
-                    .map_err(|m| format!("{name}: {m}"))?;
+                    .map_err(|m| {
+                        if m == lifecycle::STUB_FAULT {
+                            let mut runtime = world.resource_mut::<Runtime>();
+                            let calls = runtime.unsupported.entry(*name).or_default();
+                            *calls = calls.saturating_add(1);
+                        }
+                        format!("{name}: {m}")
+                    })?;
                     thread.stack.push(value);
                     deliver_pending(world, thread, now)?;
                 }

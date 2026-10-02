@@ -54,12 +54,18 @@ pub(crate) fn install(
     install_level(world, Arc::new(program), plan)
 }
 
+pub(crate) const STUB_FAULT: &str = "unbound native (stub)";
+
+fn stub_native(_: &mut World, _: &Value, _: &[Value]) -> Result<Value, String> {
+    Err(STUB_FAULT.into())
+}
+
 pub(crate) fn install_level(
     world: &mut World,
     program: Arc<Program>,
     plan: host::restart::RestartPlan,
 ) -> Result<(), Fault> {
-    let natives = plan.natives.clone();
+    let mut natives = plan.natives.clone();
     let location = Location {
         module: "<runtime>".into(),
         function: "install".into(),
@@ -79,7 +85,19 @@ pub(crate) fn install_level(
         .map(|b| b.name)
         .collect();
     unbound.sort_unstable();
-    if !unbound.is_empty() {
+    if program.stub_natives && !unbound.is_empty() {
+        for builtin in &program.natives {
+            if natives.get(builtin.namespace, builtin.name).is_none() {
+                natives.register(builtin.namespace, builtin.name, stub_native);
+            }
+        }
+        diag::warn!(
+            Sim,
+            "gsc: stubbed n={} names={}",
+            unbound.len(),
+            unbound.join(",")
+        );
+    } else if !unbound.is_empty() {
         return Err(Fault::at(
             &location,
             format!("{} unbound natives: {}", unbound.len(), unbound.join(" ")),

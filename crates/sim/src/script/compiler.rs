@@ -431,6 +431,7 @@ pub(super) fn compile(
         symbol_ids: tables.symbol_ids,
         natives,
         rules: catalog.realm(),
+        stub_natives: catalog.stub_natives(),
     })
 }
 
@@ -489,7 +490,13 @@ fn link(
     match (candidates.next(), candidates.next()) {
         (Some(&id), None) => Ok(Link::Callee(Callee::Script(id as u32))),
         (Some(_), Some(_)) => Err(format!("ambiguous imported function {name}")),
-        (None, _) => Err(match site {
+        (None, _) => match site {
+            CallSite::Call(namespace) => catalog.stub(*namespace, name),
+            CallSite::Reference => catalog.stub(Namespace::Function, name),
+            CallSite::Spawn => None,
+        }
+        .map(Link::Builtin)
+        .ok_or_else(|| match site {
             CallSite::Spawn => format!("unresolved thread function {name}"),
             CallSite::Call(Namespace::Method) => {
                 format!("unresolved method or unknown builtin {name}")

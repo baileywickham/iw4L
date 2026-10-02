@@ -16,6 +16,7 @@ pub enum Owner {
     PlayerCommand,
     Helicopter,
     Vehicle,
+    Actor,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,18 +46,31 @@ impl Builtin {
 pub struct Catalog {
     realm: crate::script::Realm,
     names: BTreeMap<Namespace, BTreeMap<&'static str, Builtin>>,
+    stub_natives: bool,
 }
 impl Catalog {
     pub fn iw4() -> Self {
         Self::from_list(crate::script::Realm::Iw4, super::iw4_catalog::IW4)
     }
+    pub fn iw4sp() -> Self {
+        Self::from_list(crate::script::Realm::Iw4Sp, super::iw4_catalog::IW4)
+    }
     pub fn t5() -> Self {
         Self::from_list(crate::script::Realm::T5, super::t5_catalog::T5)
+    }
+    /// Unknown builtins compile and unbound natives install as stubs that fail per call.
+    pub fn with_native_stubs(mut self, enabled: bool) -> Self {
+        self.stub_natives = enabled;
+        self
+    }
+    pub fn stub_natives(&self) -> bool {
+        self.stub_natives
     }
     fn from_list(realm: crate::script::Realm, list: &[Builtin]) -> Self {
         let mut catalog = Self {
             realm,
             names: BTreeMap::new(),
+            stub_natives: false,
         };
         for builtin in list {
             catalog.insert(builtin.clone());
@@ -74,6 +88,23 @@ impl Catalog {
     }
     pub fn get(&self, namespace: Namespace, name: &str) -> Option<&Builtin> {
         self.names.get(&namespace)?.get(name)
+    }
+    pub(crate) fn stub(&self, namespace: Namespace, name: &str) -> Option<Builtin> {
+        use std::sync::{Mutex, OnceLock};
+        static NAMES: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> = OnceLock::new();
+        if !self.stub_natives {
+            return None;
+        }
+        let mut names = NAMES.get_or_init(Default::default).lock().ok()?;
+        let name = match names.get(name) {
+            Some(&name) => name,
+            None => {
+                let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
+                names.insert(name);
+                name
+            }
+        };
+        Some(Builtin::new(namespace, name, Owner::Script, false))
     }
     pub fn iter(&self) -> impl Iterator<Item = &Builtin> {
         self.names.values().flat_map(BTreeMap::values)

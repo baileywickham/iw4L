@@ -370,7 +370,7 @@ pub(crate) fn stand_in_for(world: &mut World, slot: usize, weapon: u32) -> Optio
         .resource::<Runtime>()
         .program
         .as_ref()
-        .map_or(crate::script::Realm::Iw4, |p| p.rules());
+        .map_or(crate::script::Realm::Iw4, |p| p.rules().weapons());
     let frame = FrameWorld::from_world(world);
     let setup = frame.weapon_setup(weapon).filter(|_| weapon != 0)?;
     if setup.realm == realm {
