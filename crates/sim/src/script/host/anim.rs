@@ -28,7 +28,7 @@ pub(crate) struct EntityAnim {
 }
 
 impl EntityAnim {
-    fn new(tree: Arc<ScriptAnimTree>) -> Self {
+    pub(crate) fn new(tree: Arc<ScriptAnimTree>) -> Self {
         Self {
             runtime: XAnimTreeRuntime::new(Arc::clone(&tree.definition)),
             flags: vec![None; tree.nodes.len()],

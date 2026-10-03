@@ -16,6 +16,7 @@ pub const STRUCT_INIT: &str = "codescripts/struct::initstructs";
 pub(crate) fn copy_state(source: &World, target: &mut World) {
     target.insert_resource(source.resource::<Runtime>().clone());
     target.insert_resource(source.resource::<host::mechanics::Mechanics>().clone());
+    target.insert_resource(source.resource::<crate::actor::ActorPool>().clone());
     target.insert_resource(source.resource::<NativeRegistry>().clone());
     for entity in source.iter_entities() {
         if let Some(thread) = entity.get::<Thread>() {
@@ -34,6 +35,7 @@ pub(crate) fn reset(world: &mut World) {
     }
     world.insert_resource(Runtime::default());
     world.insert_resource(host::mechanics::Mechanics::default());
+    world.insert_resource(crate::actor::ActorPool::default());
 }
 
 pub(crate) fn install(
@@ -150,5 +152,7 @@ pub(crate) fn install_level(
         .spawn_map_entities(&entities, &keys)
         .map_err(|m| Fault::at(&location, m))?;
     host::presence::initialize_map_models(world);
+    host::actors::install_spawners(world);
+    world.resource_mut::<Runtime>().started = false;
     Ok(())
 }

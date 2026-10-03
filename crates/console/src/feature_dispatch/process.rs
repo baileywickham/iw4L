@@ -15,6 +15,7 @@ pub(crate) fn exit_process(mut exit: MessageReader<AppExit>, bridge: Option<Res<
     if let Some(bridge) = bridge {
         leave_master(&bridge);
     }
+    sim::script::report_usage();
     diag::lifecycle_boundary("process_exit", &format!(" code={code}"));
     diag::flush();
     let _ = std::io::stdout().flush();

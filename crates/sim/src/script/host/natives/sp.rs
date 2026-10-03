@@ -1,8 +1,7 @@
 //! Single-player builtins that need no actor system: saved dvars, threat-bias
-//! bookkeeping, spawner queries, drones, profile fields and mission results.
+//! bookkeeping, drones, profile fields and mission results.
 
-use super::super::args::{arg, float, kind, string};
-use super::super::arrays::new_array;
+use super::super::args::{float, kind, string};
 use super::engine::entity_id;
 use crate::script::host::entities::EntityKind;
 use crate::script::{Namespace, NativeRegistry, Runtime, Value};
@@ -55,33 +54,6 @@ fn classname_team(classname: &str) -> &'static str {
     } else {
         "neutral"
     }
-}
-
-fn spawner(runtime: &mut Runtime, id: u64) -> bool {
-    let is_actor = runtime
-        .entities
-        .get(&id)
-        .is_some_and(|e| e.kind != EntityKind::HudElem && e.classname.starts_with("actor_"));
-    is_actor && matches!(runtime.object_field(id, "spawnflags"), Value::Int(flags) if flags & 1 != 0)
-}
-
-fn spawners(world: &mut World, team: Option<&str>) -> Vec<u64> {
-    let mut runtime = world.resource_mut::<Runtime>();
-    let ids: Vec<(u64, String)> = runtime
-        .entities
-        .iter()
-        .map(|(id, e)| (*id, e.classname.to_string()))
-        .collect();
-    ids.into_iter()
-        .filter(|(id, classname)| {
-            spawner(&mut runtime, *id) && team.is_none_or(|team| classname_team(classname) == team)
-        })
-        .map(|(id, _)| id)
-        .collect()
-}
-
-fn objects(world: &mut World, ids: Vec<u64>) -> Result<Value, String> {
-    new_array(world, ids.into_iter().map(Value::Object).collect())
 }
 
 fn level_field(world: &mut World, name: &str) -> String {
@@ -195,27 +167,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             .map_or(Value::Undefined, |name| Value::string(name)))
     });
 
-    // No actor system yet: the AI queries see an empty level.
-    for name in ["getaiarray", "getaispeciesarray", "getcorpsearray"] {
-        registry.register(Function, name, |world, _, _| new_array(world, Vec::new()));
-    }
-    registry.register(Function, "getaicount", |_, _, _| Ok(Value::Int(0)));
-    registry.register(Function, "getspawnerarray", |world, _, _| {
-        let ids = spawners(world, None);
-        objects(world, ids)
-    });
-    registry.register(Function, "getspawnerteamarray", |world, _, args| {
-        let team = string(args, 0)?;
-        let ids = spawners(world, Some(&team));
-        objects(world, ids)
-    });
-    registry.register(Function, "isspawner", |world, _, args| {
-        let spawner = match world.resource::<Runtime>().entity(arg(args, 0)?) {
-            Some((id, _)) => spawner(&mut world.resource_mut::<Runtime>(), id),
-            None => false,
-        };
-        Ok(Value::Int(spawner.into()))
-    });
     // A drone is a script model standing where its spawner is; without aitypes it has no
     // character model and carries no weapon.
     registry.register(Method, "spawndrone", |world, receiver, _| {
@@ -246,14 +197,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             }
             _ => Ok(Value::Int(0)),
         }
-    });
-    // Players are the only sentients until actors exist.
-    registry.register(Function, "issentient", |world, _, args| {
-        let player = world
-            .resource::<Runtime>()
-            .player_client_of(arg(args, 0)?)
-            .is_some();
-        Ok(Value::Int(player.into()))
     });
     registry.register(Function, "getcommandfromkey", |_, _, _| Ok(Value::string("")));
     registry.register(Function, "weaponhasthermalscope", |_, _, args| {

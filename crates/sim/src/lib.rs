@@ -1,3 +1,4 @@
+pub mod actor;
 pub mod adopt;
 pub mod bullet;
 mod shield;

@@ -949,6 +949,21 @@ fn client_name(name: &[u8]) -> String {
 
 pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<Value> {
     let id = ClientId(client);
+    // The SP player is an allied sentient; scripts read `team` before writing it.
+    if name == "team" {
+        let mut runtime = world.resource_mut::<Runtime>();
+        if runtime
+            .program
+            .as_ref()
+            .is_some_and(|p| p.rules() == crate::script::Realm::Iw4Sp)
+        {
+            let object = runtime.players.get(&client)?.object;
+            return Some(match runtime.object_field(object, "team") {
+                Value::Undefined => Value::string("allies"),
+                team => team,
+            });
+        }
+    }
     if name == "sessionstate" {
         let runtime = world.resource::<Runtime>();
         return runtime

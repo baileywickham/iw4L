@@ -1111,7 +1111,7 @@ fn preflight_match_install(
     };
     let (startup_roots, startup_entries, script_catalog) = match specops {
         true => {
-            let startup = sim::script::Iw4SpStartup::new(zone);
+            let startup = sim::script::Iw4SpStartup::new(zone, sources.0.modules());
             (
                 startup.roots,
                 startup.entries,

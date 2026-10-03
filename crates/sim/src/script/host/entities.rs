@@ -163,6 +163,10 @@ pub(crate) enum EntityKind {
     Item(i32),
     Missile(crate::ProjectileId),
     Vehicle,
+    Actor(crate::actor::ActorId),
+    ActorSpawner,
+    #[allow(dead_code)]
+    ActorCorpse,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -389,7 +393,11 @@ impl Runtime {
                 presence,
                 matches!(
                     entity.kind,
-                    EntityKind::Spawned | EntityKind::Vehicle | EntityKind::Missile(_)
+                    EntityKind::Spawned
+                        | EntityKind::Vehicle
+                        | EntityKind::Missile(_)
+                        | EntityKind::Actor(_)
+                        | EntityKind::ActorCorpse
                 ),
             ));
         }

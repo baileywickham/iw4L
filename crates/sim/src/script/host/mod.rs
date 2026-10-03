@@ -1,3 +1,4 @@
+pub(crate) mod actors;
 pub(crate) mod anim;
 pub mod animtree;
 pub mod args;

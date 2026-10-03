@@ -715,9 +715,7 @@ fn weapon_facts(
         return Ok(Default::default());
     }
     let frame = crate::frame::FrameWorld::from_world(world);
-    let index = frame
-        .weapon_index_by_script_name(&name)
-        .ok_or_else(|| format!("unknown weapon '{name}'"))?;
+    let index = crate::script_player::weapon_named(&frame, &name)?;
     Ok(frame.weapon_combat_row(index).unwrap_or_default())
 }
 

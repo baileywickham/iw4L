@@ -48,6 +48,7 @@ pub(crate) use runtime::{
     advance_scheduler, copy_state, healthy, install, preflight, reset, start, start_with_player,
     take_signals,
 };
+pub use runtime::usage::report as report_usage;
 pub use source::{FileSources, SourceOrigin, SourceResolver, decode_source, normalize_module};
 pub(crate) use value::ArrayKey;
 pub use value::{ScriptString, Value};

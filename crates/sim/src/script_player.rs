@@ -449,7 +449,13 @@ fn sp_weapon_stand_in(world: &FrameWorld, name: &str) -> Option<u32> {
         return None;
     }
     let family = name.split('_').next()?;
-    [format!("{name}_mp"), format!("{family}_mp")]
+    let renamed = match family {
+        "mp5" => "mp5k",
+        "fraggrenade" => "frag_grenade",
+        "flash" => "flash_grenade",
+        family => family,
+    };
+    [format!("{name}_mp"), format!("{family}_mp"), format!("{renamed}_mp")]
         .iter()
         .find_map(|candidate| world.weapon_index_by_script_name(candidate))
         .filter(|&w| w != 0)

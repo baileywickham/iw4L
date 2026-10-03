@@ -30,6 +30,7 @@ impl Default for SimWorld {
         ecs.insert_resource(crate::PersistentDataStore::default());
         ecs.insert_resource(crate::script::Runtime::default());
         ecs.insert_resource(crate::script::Mechanics::default());
+        ecs.insert_resource(crate::actor::ActorPool::default());
         ecs.insert_resource(crate::script::NativeRegistry::default());
         Self {
             ecs,

@@ -1,5 +1,6 @@
 mod lifecycle;
 mod state;
+pub mod usage;
 
 use super::{
     ArrayKey, Binary, Callee, Fault, Frame, Global, Location, Op, Program, Thread, ThreadState,
@@ -195,6 +196,24 @@ pub(super) fn run_now(
     args: Vec<Value>,
     now: i64,
 ) -> Result<(), Fault> {
+    run_now_thread(world, name, receiver, args, now).map(|_| ())
+}
+
+pub(super) fn thread_running(world: &mut World, serial: u64) -> bool {
+    world
+        .query::<&Thread>()
+        .iter(world)
+        .any(|thread| thread.serial == serial)
+}
+
+/// `run_now` that reports the thread when it is still waiting afterwards.
+pub(super) fn run_now_thread(
+    world: &mut World,
+    name: &str,
+    receiver: Value,
+    args: Vec<Value>,
+    now: i64,
+) -> Result<Option<u64>, Fault> {
     let (program, function, location) = entry(world, name)?;
     let mut thread = new_thread(world, &program, function, receiver, args)
         .map_err(|m| Fault::at(&location, m))?;
@@ -205,14 +224,17 @@ pub(super) fn run_now(
     );
     execute(world, &program, &mut thread, now);
     world.resource_mut::<Runtime>().budget = budget;
-    if thread.state == ThreadState::Complete {
-        retire(&mut world.resource_mut::<Runtime>(), thread.serial);
+    let serial = thread.serial;
+    let running = if thread.state == ThreadState::Complete {
+        retire(&mut world.resource_mut::<Runtime>(), serial);
+        None
     } else {
         world.spawn(thread);
-    }
+        Some(serial)
+    };
     match world.resource::<Runtime>().fault.clone() {
         Some(fault) => Err(fault),
-        None => Ok(()),
+        None => Ok(running),
     }
 }
 
@@ -876,6 +898,7 @@ fn instruction(
                             let mut runtime = world.resource_mut::<Runtime>();
                             let calls = runtime.unsupported.entry(*name).or_default();
                             *calls = calls.saturating_add(1);
+                            usage::stub(name);
                             // Loops over a stubbed query must see no elements, not spin on undefined.
                             if name.ends_with("array") {
                                 crate::script::host::arrays::new_array(world, Vec::new())?
@@ -951,12 +974,22 @@ fn instruction(
                     type_name(&receiver)
                 ));
             };
+            if usage::enabled() {
+                note_field(world, program, id, field, false);
+            }
             if let Some(client) = world.resource::<Runtime>().player_client(id)
                 && let Some(value) = super::host::players::load_field(
                     world,
                     client,
                     &program.symbols[field as usize],
                 )
+            {
+                thread.stack.push(value);
+                return Ok(());
+            }
+            if let Some(actor) = super::host::actors::actor_of(world, id)
+                && let Some(value) =
+                    super::host::actors::load_field(world, actor, &program.symbols[field as usize])
             {
                 thread.stack.push(value);
                 return Ok(());
@@ -987,10 +1020,23 @@ fn instruction(
                     type_name(&receiver)
                 ));
             };
+            if usage::enabled() {
+                note_field(world, program, id, field, true);
+            }
             if let Some(client) = world.resource::<Runtime>().player_client(id)
                 && super::host::players::store_field(
                     world,
                     client,
+                    &program.symbols[field as usize],
+                    &value,
+                )?
+            {
+                return Ok(());
+            }
+            if let Some(actor) = super::host::actors::actor_of(world, id)
+                && super::host::actors::store_field(
+                    world,
+                    actor,
                     &program.symbols[field as usize],
                     &value,
                 )?
@@ -1491,6 +1537,23 @@ fn terminal(message: &str) -> bool {
         || message.ends_with(": vehicle pool exhausted")
 }
 
+fn note_field(world: &World, program: &Program, id: u64, field: u32, write: bool) {
+    use super::host::entities::EntityKind;
+    let Some(entity) = world.resource::<Runtime>().entities.get(&id) else {
+        return;
+    };
+    let owner = match entity.kind {
+        EntityKind::Actor(_) => "actor",
+        EntityKind::ActorSpawner => "spawner",
+        EntityKind::ActorCorpse => "corpse",
+        _ if entity.classname.starts_with("actor_") => "spawner",
+        _ => return,
+    };
+    if let Some(name) = program.symbols.get(field as usize) {
+        usage::field(owner, name, write);
+    }
+}
+
 fn report(world: &mut World, fault: &Fault) {
     let site = format!(
         "{}:{}:{}",
@@ -1502,6 +1565,7 @@ fn report(world: &mut World, fault: &Fault) {
         .entry((site.clone(), fault.message.clone()))
         .or_default();
     *hits += 1;
+    usage::error(&site, &fault.message);
     if *hits == 1 {
         diag::warn!(Sim, "gsc: script runtime error: {fault}");
         diag::script_boundary(

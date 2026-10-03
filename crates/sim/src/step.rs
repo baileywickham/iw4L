@@ -48,6 +48,7 @@ pub(crate) fn schedule() -> Schedule {
                 crate::script::sync_presence,
                 run_players_system,
                 record_collision_state_system,
+                crate::script::host::actors::run_actors,
                 run_entity_types_system,
                 dispatch_touches_system,
                 crate::script::sync_engine_events,
