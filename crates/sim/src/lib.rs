@@ -97,8 +97,8 @@ pub use hudelem::{
     hud_elem_update_client, rebase_hud_archival,
 };
 pub use identities::{
-    ActionSequence, DamageSource, EventSequence, LifeSequence, MatchPhase, MatchRng, PelletId,
-    ProjectileId, RNG_DOMAIN_SCHEME, RngDomain, ScriptModelId, ShotId,
+    ActionSequence, Attacker, DamageSource, EventSequence, LifeSequence, MatchPhase, MatchRng,
+    PelletId, ProjectileId, RNG_DOMAIN_SCHEME, RngDomain, ScriptModelId, ShotId,
 };
 pub use input::{
     ActionRequestId, ClassId, ClientAction, MENU_RESPONSE_BYTES, SpawnPick, TickInput,

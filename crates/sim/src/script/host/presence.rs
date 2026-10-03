@@ -510,6 +510,14 @@ impl Runtime {
             .collect()
     }
 
+    /// A damage attacker named by script: a player, or an entity with a presence.
+    pub(crate) fn attacker_of(&self, value: &Value) -> Option<crate::Attacker> {
+        match self.player_client_of(value) {
+            Some(client) => Some(crate::Attacker::Client(crate::ClientId(client))),
+            None => self.presence_of(value).map(crate::Attacker::Entity),
+        }
+    }
+
     pub(crate) fn presence_of(&self, value: &Value) -> Option<ScriptModelId> {
         self.entity(value).and_then(|(_, e)| e.presence)
     }

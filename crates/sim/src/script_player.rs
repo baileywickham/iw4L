@@ -116,7 +116,7 @@ pub(crate) fn spawn(
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Hit {
     pub victim: ClientId,
-    pub attacker: Option<ClientId>,
+    pub attacker: Option<crate::Attacker>,
     pub amount: i32,
     pub flags: i32,
     pub means: &'static str,
@@ -196,7 +196,7 @@ pub(crate) fn damage(
     let splash = intent.splash;
     let hit = Hit {
         victim: intent.target,
-        attacker: Some(intent.attacker),
+        attacker: Some(crate::Attacker::Client(intent.attacker)),
         amount,
         flags: if splash { IDFLAGS_RADIUS } else { 0 },
         means: means_of_death(world, intent),
@@ -455,10 +455,14 @@ fn sp_weapon_stand_in(world: &FrameWorld, name: &str) -> Option<u32> {
         "flash" => "flash_grenade",
         family => family,
     };
-    let stand_in = [format!("{name}_mp"), format!("{family}_mp"), format!("{renamed}_mp")]
-        .iter()
-        .find_map(|candidate| world.weapon_index_by_script_name(candidate))
-        .filter(|&w| w != 0)?;
+    let stand_in = [
+        format!("{name}_mp"),
+        format!("{family}_mp"),
+        format!("{renamed}_mp"),
+    ]
+    .iter()
+    .find_map(|candidate| world.weapon_index_by_script_name(candidate))
+    .filter(|&w| w != 0)?;
     diag::warn!(
         Sim,
         "spec ops: no SP weapon `{name}` in the loaded zones; standing in `{}`",

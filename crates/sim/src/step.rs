@@ -963,15 +963,34 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
 
 const SPEC_OPS_DEFAULT_WEAPONS: &[&str] = &["m4_reflex_mp", "m4_mp", "usp_mp"];
 
+/// Mission start points, one per co-op seat: player one, then its partner.
+const SPEC_OPS_STARTS: &[&str] = &["info_player_start_so", "info_player_start_soPlayer2"];
+
 fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
+    let seat = world
+        .client_ids_sorted()
+        .into_iter()
+        .filter(|&other| other != id)
+        .filter(|&other| {
+            world
+                .client_meta(other)
+                .is_some_and(|m| m.lifecycle != ClientLifecycle::Connecting)
+        })
+        .count();
     let spawns = &world.bootstrap_ref().spawns;
-    let Some(point) = crate::spawn::spawn_candidate_indices(spawns)
-        .first()
-        .map(|&index| spawns[index].clone())
-    else {
+    let start = SPEC_OPS_STARTS
+        .get(seat)
+        .and_then(|classname| spawns.iter().find(|p| p.classname == *classname));
+    let Some(point) = start.cloned().or_else(|| {
+        crate::spawn::spawn_candidate_indices(spawns)
+            .first()
+            .map(|&index| spawns[index].clone())
+    }) else {
         diag::warn!(Sim, "spec ops: no player start for client={}", id.0);
         return;
     };
+    // Spec Ops partners are one allied squad (friendly name tags, no FFA colours).
+    world.client_meta_mut(id).client_state_team = entity_iw4::TEAM_ALLIES;
     crate::script_player::spawn(world, tick, id, point.origin, point.angles, "playing");
     let sp_catalog = world
         .weapon_script_names()
@@ -994,7 +1013,7 @@ fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
     }
     diag::info!(
         Sim,
-        "spec ops: client={} spawned at {} [{:.1}, {:.1}, {:.1}] weapon={}{}",
+        "spec ops: client={} seat={seat} spawned at {} [{:.1}, {:.1}, {:.1}] weapon={}{}",
         id.0,
         point.classname,
         point.origin[0],

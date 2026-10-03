@@ -2044,6 +2044,21 @@ impl SimState {
         }
     }
 
+    /// Collision as it stands now, for shooters without a lag-compensation claim.
+    pub fn current_query(
+        &self,
+        current: Tick,
+        player: impl Fn(ClientId) -> Option<PlayerState>,
+    ) -> crate::bullet_collision::LagcompQuery {
+        let plan = LagcompPlan::CurrentAuthority {
+            reason: crate::bullet_collision::CurrentAuthorityReason::NoSampleClaim,
+        };
+        crate::bullet_collision::LagcompQuery {
+            players: self.lagcomp_players(current, plan, player),
+            entities: self.lagcomp_entities(current, plan),
+        }
+    }
+
     fn lagcomp_players(
         &self,
         current: Tick,

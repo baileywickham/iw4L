@@ -534,6 +534,7 @@ pub fn apply_prepared_match(
         )
         .map_err(|e| script_refusal(&zone, gametype, "install", &e))?;
         if *role == frame::RuntimeRole::Listen
+            && kind != gamemode_iw4::GameModeKind::SpecOps
             && let (Some(account), Some(local)) = (account.as_ref(), local.as_ref())
         {
             account
@@ -549,9 +550,12 @@ pub fn apply_prepared_match(
         for (name, value) in &script_dvars {
             sim.set_gsc_dvar(name, value);
         }
+        let party = bridge
+            .as_ref()
+            .map_or(1, |bridge| bridge.state().members().len().max(1));
         for entry in script_entries {
             match kind == gamemode_iw4::GameModeKind::SpecOps {
-                true => sim.start_gsc_with_player(&entry),
+                true => sim.start_gsc_with_player(&entry, party),
                 false => sim
                     .start_gsc(&entry, sim::script::Value::level(), Vec::new())
                     .map(drop),

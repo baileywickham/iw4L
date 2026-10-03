@@ -320,7 +320,7 @@ fn path_node_objects(world: &mut World, nodes: Vec<usize>) -> Result<Value, Stri
     new_array(world, values)
 }
 
-fn path_node_object(world: &mut World, index: usize) -> Result<Value, String> {
+pub(crate) fn path_node_object(world: &mut World, index: usize) -> Result<Value, String> {
     let cached = runtime(world).path_nodes.get(index).copied().flatten();
     if let Some(id) = cached.filter(|id| world.resource::<Runtime>().live(id)) {
         return Ok(Value::Object(id));
@@ -621,10 +621,9 @@ fn radius_damage(
     let radius = float(args, 1)?;
     let max = float(args, 2)?;
     let min = float(args, 3)?;
-    let attacker = match args.get(4) {
-        Some(Value::Object(id)) => runtime(world).player_client(*id).map(crate::ClientId),
-        _ => None,
-    };
+    let attacker = args
+        .get(4)
+        .and_then(|value| runtime(world).attacker_of(value));
     let means = optional(args, 5, string)?
         .map(|name| super::super::entity_damage::means_named(&name))
         .transpose()?
@@ -874,10 +873,7 @@ fn register_entities(registry: &mut NativeRegistry) {
         let target = runtime(world)
             .presence_of(receiver)
             .ok_or("damagepiece requires a model")?;
-        let attacker = args
-            .get(2)
-            .and_then(|v| runtime(world).player_client_of(v))
-            .map(crate::ClientId);
+        let attacker = args.get(2).and_then(|v| runtime(world).attacker_of(v));
         let origin = origin_of(world, receiver)?;
         runtime(world)
             .hits

@@ -19,6 +19,22 @@ pub(crate) struct SpState {
 /// `missionSOHighestDifficulty` and `missionHighestDifficulty` hold one digit per level.
 const PROFILE_DIGITS: usize = 64;
 
+/// The bias `attacker`'s threat-bias group holds against `target`'s
+/// (`setthreatbias( targetgroup, attackergroup, bias )`); `i32::MIN` means ignore.
+pub(crate) fn threat_bias(world: &World, attacker: u64, target: u64) -> i32 {
+    let sp = &world.resource::<Runtime>().sp;
+    let (Some(a), Some(t)) = (
+        sp.entity_groups.get(&attacker),
+        sp.entity_groups.get(&target),
+    ) else {
+        return 0;
+    };
+    sp.threat_bias
+        .get(&(t.clone(), a.clone()))
+        .copied()
+        .unwrap_or(0)
+}
+
 pub(crate) fn profile_value(world: &World, name: &str) -> Value {
     let key = name.to_ascii_lowercase();
     if let Some(value) = world.resource::<Runtime>().sp.profile.get(&key) {
@@ -141,7 +157,12 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     registry.register(Function, "getthreatbias", |world, _, args| {
         let a = string(args, 0)?.to_ascii_lowercase();
         let b = string(args, 1)?.to_ascii_lowercase();
-        let bias = world.resource::<Runtime>().sp.threat_bias.get(&(a, b)).copied();
+        let bias = world
+            .resource::<Runtime>()
+            .sp
+            .threat_bias
+            .get(&(a, b))
+            .copied();
         Ok(Value::Int(bias.unwrap_or(0)))
     });
     registry.register(Method, "setthreatbiasgroup", |world, receiver, args| {
@@ -198,7 +219,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             _ => Ok(Value::Int(0)),
         }
     });
-    registry.register(Function, "getcommandfromkey", |_, _, _| Ok(Value::string("")));
+    registry.register(Function, "getcommandfromkey", |_, _, _| {
+        Ok(Value::string(""))
+    });
     registry.register(Function, "weaponhasthermalscope", |_, _, args| {
         let name = string(args, 0)?;
         Ok(Value::Int(name.contains("thermal").into()))

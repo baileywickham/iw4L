@@ -1588,6 +1588,7 @@ pub(crate) struct WeaponZoneCapture {
     pub fpv_meshes: FpvMeshBuild,
     pub world_weapons: WorldWeaponBuild,
     pub xanims: XAnimBuild,
+    pub bodies: BodyMeshBuild,
     xmodel_names: HashMap<Ptr, Ptr>,
     xmodel_surfaces: HashMap<Ptr, Ptr>,
     xmodel_surface_names: HashMap<Ptr, Ptr>,
@@ -1655,6 +1656,7 @@ impl AssetSink for MaterialPopulationSink {
             capture.fpv_meshes.set_strings(strings);
             capture.world_weapons.set_strings(strings);
             capture.xanims.set_strings(strings);
+            capture.bodies.set_strings(strings);
         }
     }
 
@@ -1698,6 +1700,7 @@ impl AssetLinkSink for MaterialPopulationSink {
             if ty == AssetType::XModel {
                 capture.fpv_meshes.capture(stream, &self.materials);
                 capture.world_weapons.capture(stream, &self.materials);
+                capture.bodies.capture(stream, &self.materials);
             }
         }
         Ok(())

@@ -251,6 +251,12 @@ pub(super) async fn walk_prepared_match(
     match so_walk {
         Some(mut so) => {
             report.append(&mut so.report);
+            let coop_bodies = bodies.absorb(std::mem::take(&mut so.mission.zone_weapons.bodies));
+            if coop_bodies > 0 {
+                report.push(format!(
+                    "spec ops co-op bodies from the mission: {coop_bodies}"
+                ));
+            }
             sp_weapons = Some((
                 std::mem::take(&mut so.common_weapons),
                 std::mem::take(&mut so.mission.zone_weapons),
@@ -330,6 +336,7 @@ pub(super) async fn walk_prepared_match(
             fpv_meshes: common_sp_fpv,
             xanims: common_sp_xanims,
             materials: common_sp_materials,
+            ..
         } = common_sp;
         let mp_rows = weapons.len();
         let fpv_added = fpv_meshes.absorb(common_sp_fpv);

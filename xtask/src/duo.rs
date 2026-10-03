@@ -72,7 +72,10 @@ fn launch(root: &Path, run: &Path, binary: &Path, role: &str) -> Res<Player> {
     }
     fs::write(
         directory.join("settings.cfg"),
-        format!("resolution=960x540\nfullscreen=false\nvsync=true\nplayer_name={role}\n"),
+        format!(
+            "resolution={}\nfullscreen=false\nvsync=true\nplayer_name={role}\n",
+            std::env::var("DUO_RESOLUTION").unwrap_or_else(|_| "960x540".into())
+        ),
     )
     .map_err(|e| e.to_string())?;
     let mut command = Command::new(binary);
@@ -80,6 +83,9 @@ fn launch(root: &Path, run: &Path, binary: &Path, role: &str) -> Res<Player> {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, root.join(value));
         }
+    }
+    if let Ok(position) = std::env::var(format!("DUO_{}_POS", role.to_ascii_uppercase())) {
+        command.env("IW4L_WINDOW_POS", position);
     }
     let child = command
         .arg("menu")

@@ -165,7 +165,6 @@ pub(crate) enum EntityKind {
     Vehicle,
     Actor(crate::actor::ActorId),
     ActorSpawner,
-    #[allow(dead_code)]
     ActorCorpse,
 }
 
@@ -281,13 +280,18 @@ impl Runtime {
             }
             -1
         } else {
-            if self
-                .entities
-                .values()
-                .filter(|e| e.kind != EntityKind::HudElem)
-                .count()
-                >= MAX_SCRIPT_ENTITIES
+            let used = self.entities.values().filter(|e| e.uses_gentity()).count();
+            let cap = if self
+                .program
+                .as_ref()
+                .is_some_and(|p| p.rules() == crate::script::Realm::Iw4Sp)
             {
+                MAX_SP_SCRIPT_ENTITIES
+            } else {
+                MAX_SCRIPT_ENTITIES
+            };
+            if used >= cap && !classname.starts_with("info_vehicle_node") {
+                self.report_entity_use();
                 return Err("no free entities".into());
             }
             let number = self.next_entity_number;
@@ -535,6 +539,26 @@ impl Runtime {
     }
 }
 
+impl ScriptEntity {
+    /// SP vehicle nodes are `vehicle_node_t`s, not gentities (`SP_info_vehicle_node`).
+    fn uses_gentity(&self) -> bool {
+        self.kind != EntityKind::HudElem && !self.classname.starts_with("info_vehicle_node")
+    }
+}
+
+impl Runtime {
+    fn report_entity_use(&self) {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for e in self.entities.values().filter(|e| e.uses_gentity()) {
+            *counts.entry(&e.classname).or_default() += 1;
+        }
+        let mut top: Vec<_> = counts.into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let top: Vec<String> = top.iter().take(16).map(|(c, n)| format!("{c}={n}")).collect();
+        diag::warn!(Sim, "gsc: no free entities: {}", top.join(" "));
+    }
+}
+
 pub(crate) fn code_classname(classname: &str) -> &str {
     if classname.starts_with("script_vehicle") {
         return "script_vehicle";
@@ -556,4 +580,8 @@ pub(crate) fn code_classname(classname: &str) -> &str {
 }
 
 pub(crate) const MAX_SCRIPT_ENTITIES: usize = 2048 - 64;
+/// SP base maps carry close to 2048 entities before Spec Ops scripts delete the
+/// unused ones (`so_delete_all_by_type`), and createfx spawns sound origins first.
+/// Script-only entities hold no gentity here; movers keep their own limit.
+pub(crate) const MAX_SP_SCRIPT_ENTITIES: usize = 4096;
 pub(crate) const MAX_HUD_ELEMS: usize = 1024;

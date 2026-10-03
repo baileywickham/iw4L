@@ -315,10 +315,7 @@ fn do_damage(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Valu
             }
         },
     };
-    let attacker = args
-        .get(2)
-        .and_then(|value| runtime.player_client_of(value))
-        .map(ClientId);
+    let attacker = args.get(2).and_then(|value| runtime.attacker_of(value));
     let inflictor = args.get(3).and_then(|value| runtime.presence_of(value));
     let on_head = optional(args, 4, int)?.unwrap_or(0) != 0;
     let means = optional(args, 5, string)?

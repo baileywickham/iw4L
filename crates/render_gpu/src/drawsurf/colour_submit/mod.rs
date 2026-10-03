@@ -5865,7 +5865,7 @@ impl ExactPrepare<'_> {
                                 executable,
                                 overlay,
                                 &texture_slots,
-                                key,
+                                placed_span_drawsurf_key(&kind, key),
                                 pass_index as u32,
                             )
                             .map_err(GpuSubmitRefusal::ConstantPack)?;
@@ -6171,6 +6171,25 @@ fn placed_pack_key(
         slots: Arc::as_ptr(slots).cast::<u32>() as usize,
         drawsurf_key,
         pass_index,
+    }
+}
+
+/// The drawsurf key names one interned constant span per frame. Brush-model
+/// surfaces share their key with every other placement of the same material,
+/// so a placed world draw keys its span by its pose too; otherwise the last
+/// placement patched into the span moves every earlier one there.
+fn placed_span_drawsurf_key(kind: &RetainedDrawKind, key: u64) -> u64 {
+    match *kind {
+        RetainedDrawKind::World {
+            world_from_local, ..
+        } if world_from_local != Mat4::IDENTITY => {
+            let mut id = key;
+            for value in world_from_local.to_cols_array() {
+                mix_u64(&mut id, u64::from(value.to_bits()));
+            }
+            id
+        }
+        _ => key,
     }
 }
 

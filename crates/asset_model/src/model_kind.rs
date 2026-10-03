@@ -20,6 +20,8 @@ pub fn model_kind(name: &str) -> Option<ModelKind> {
         Some(ModelKind::WorldWeapon)
     } else if name.starts_with("mp_body_")
         || name.starts_with("head_")
+        || name.starts_with("coop_body_")
+        || name.starts_with("coop_head_")
         || name.contains("_mp_body_")
         || name.contains("_mp_head_")
     {

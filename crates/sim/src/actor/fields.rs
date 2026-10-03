@@ -96,9 +96,8 @@ pub(crate) fn default_value(def: &FieldDef) -> Value {
         "interval" => return Value::Float(96.0),
         "pathenemyfightdist" | "pathenemylookahead" => return Value::Float(192.0),
         "meleeattackdist" => return Value::Float(64.0),
-        "upaimlimit" | "downaimlimit" | "leftaimlimit" | "rightaimlimit" => {
-            return Value::Float(45.0);
-        }
+        "upaimlimit" | "rightaimlimit" => return Value::Float(45.0),
+        "downaimlimit" | "leftaimlimit" => return Value::Float(-45.0),
         "grenadeweapon" => return Value::string("none"),
         "combatmode" => return Value::string("cover"),
         "alertlevel" => return Value::string("noncombat"),

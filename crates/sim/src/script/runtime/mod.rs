@@ -62,6 +62,13 @@ pub(super) fn raise(world: &mut World, receiver: Value, name: &str, args: Vec<Va
         .push((receiver, name.into(), args));
 }
 
+/// Delivers a notify before the caller continues (`killanimscript` before the next
+/// animscript starts).
+pub(crate) fn notify_now(world: &mut World, receiver: Value, name: &str, now: i64) {
+    raise(world, receiver, name, Vec::new());
+    deliver_external(world, now);
+}
+
 fn deliver_pending(world: &mut World, thread: &mut Thread, now: i64) -> Result<(), String> {
     loop {
         let pending = std::mem::take(&mut world.resource_mut::<Runtime>().pending_notifies);
@@ -167,11 +174,13 @@ pub(crate) fn start(
     spawn_thread(world, &program, function, receiver, args).map_err(|m| Fault::at(&location, m))
 }
 
-/// Holds a level entry until the first player entity exists (SP `main` reads `level.player`).
-pub(crate) fn start_with_player(world: &mut World, name: &str) -> Result<(), Fault> {
+/// Holds a level entry until the party's player entities exist (SP `main` reads `level.players`).
+pub(crate) fn start_with_player(world: &mut World, name: &str, party: usize) -> Result<(), Fault> {
     entry(world, name)?;
     let mut runtime = world.resource_mut::<Runtime>();
     runtime.started = true;
+    runtime.party = party;
+    runtime.party_since_ms = None;
     runtime.player_entries.push(name.into());
     Ok(())
 }
@@ -236,6 +245,21 @@ pub(super) fn run_now_thread(
         Some(fault) => Err(fault),
         None => Ok(running),
     }
+}
+
+/// Threads a script function reference held by a native (`setModelFunc`).
+pub(crate) fn spawn_function(
+    world: &mut World,
+    function: u32,
+    receiver: Value,
+    args: Vec<Value>,
+) -> Result<u64, String> {
+    let program = world
+        .resource::<Runtime>()
+        .program
+        .clone()
+        .ok_or("no program installed")?;
+    spawn_thread(world, &program, function as usize, receiver, args)
 }
 
 fn spawn_thread(

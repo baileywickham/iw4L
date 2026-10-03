@@ -69,7 +69,7 @@ pub fn soldier_kits(names: &[String]) -> SoldierKits {
 }
 
 fn is_head_model(name: &str) -> bool {
-    name.starts_with("head_") || name.contains("_mp_head_")
+    name.starts_with("head_") || name.contains("_mp_head_") || name.starts_with("coop_head_")
 }
 
 pub fn is_arms_model(name: &str) -> bool {
@@ -77,7 +77,7 @@ pub fn is_arms_model(name: &str) -> bool {
 }
 
 pub fn is_body_model(name: &str) -> bool {
-    name.starts_with("mp_body_") || name.contains("_mp_body_")
+    name.starts_with("mp_body_") || name.contains("_mp_body_") || name.starts_with("coop_body_")
 }
 
 pub fn body_has_tp_attach_bones(bone_names: &[String]) -> bool {

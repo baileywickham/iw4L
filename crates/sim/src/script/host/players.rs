@@ -23,8 +23,34 @@ pub(crate) fn player_object(world: &World, client: u32) -> Value {
         .map_or(Value::Undefined, |slot| Value::Object(slot.object))
 }
 
+/// The script entity behind an attacker: a player, or an actor by its presence.
+pub(crate) fn attacker_object(world: &World, attacker: Option<crate::Attacker>) -> Value {
+    match attacker {
+        Some(crate::Attacker::Client(client)) => player_object(world, client.0),
+        Some(crate::Attacker::Entity(id)) => world
+            .resource::<Runtime>()
+            .presented_by(id)
+            .map_or(Value::Undefined, Value::Object),
+        None => Value::Undefined,
+    }
+}
+
 pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::script_player::Hit) {
     if crate::script_player::god_mode(&FrameWorld::from_world(world), hit.victim) {
+        if single_player(world) {
+            diag::info!(
+                Sim,
+                "player: client={} hit (god) amount={} means={} by {}",
+                hit.victim.0,
+                hit.amount,
+                hit.means,
+                attacker_label(world, hit.attacker)
+            );
+        }
+        return;
+    }
+    if single_player(world) {
+        super::natives::sp_player::damage(world, tick, hit);
         return;
     }
     let victim = player_object(world, hit.victim.0);
@@ -38,11 +64,17 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
     {
         return;
     }
-    let attacker = match hit.attacker.map(|a| player_object(world, a.0)) {
-        Some(attacker) if attacker != Value::Undefined => attacker,
-        _ => world_entity(world),
+    let attacker = match attacker_object(world, hit.attacker) {
+        Value::Undefined => world_entity(world),
+        attacker => attacker,
     };
-    let weapon = script_weapon(world, hit.attacker.map_or(u32::MAX, |a| a.0), hit.weapon);
+    let weapon = script_weapon(
+        world,
+        hit.attacker
+            .and_then(crate::Attacker::client)
+            .map_or(u32::MAX, |a| a.0),
+        hit.weapon,
+    );
     let weapon = crate::script_player::weapon_name(&FrameWorld::from_world(world), weapon);
     let hitloc = weapon_iw4::HITLOC_NAMES
         .get(usize::from(hit.hitloc))
@@ -72,6 +104,79 @@ pub(crate) fn player_damage(world: &mut World, tick: crate::Tick, hit: &crate::s
         // Deaths from this hit are settled before the caller continues.
         settle_deaths(world);
     }
+}
+
+pub(crate) fn attacker_label(world: &World, attacker: Option<crate::Attacker>) -> String {
+    match attacker_object(world, attacker) {
+        Value::Object(object) => world
+            .resource::<Runtime>()
+            .entities
+            .get(&object)
+            .map_or_else(String::new, |e| format!("{} {}", e.classname, e.number)),
+        _ => "world".into(),
+    }
+}
+
+fn float_field(world: &mut World, object: u64, name: &str) -> Option<f32> {
+    match world.resource_mut::<Runtime>().object_field(object, name) {
+        Value::Float(v) => Some(v),
+        Value::Int(v) => Some(v as f32),
+        _ => None,
+    }
+}
+
+/// The SP engine's own player damage (no damage callback): `damagemultiplier`
+/// scales it, a killing hit first leaves 1 health for `deathinvulnerabletime`,
+/// then `"damage"` (and `"death"`) go to the player.
+pub(crate) fn sp_damage_amount(
+    world: &mut World,
+    tick: crate::Tick,
+    object: u64,
+    hit: &crate::script_player::Hit,
+) -> i32 {
+    let now = i64::from(tick.0) * i64::from(crate::MATCH_TICK_MS);
+    let multiplier = float_field(world, object, "damagemultiplier").unwrap_or(1.0);
+    let mut amount = ((hit.amount as f32) * multiplier).round().max(1.0) as i32;
+    let health = FrameWorld::from_world(world)
+        .player(hit.victim)
+        .map_or(0, |ps| ps.health);
+    let max_health = {
+        let frame = FrameWorld::from_world(world);
+        frame
+            .client_meta(hit.victim)
+            .map(|m| m.max_health)
+            .filter(|&n| n > 0)
+            .or_else(|| frame.player(hit.victim).map(|ps| ps.max_health))
+            .filter(|&n| n > 0)
+            .unwrap_or(100)
+    };
+    let (invulnerable_until, spent) = {
+        let mut runtime = world.resource_mut::<Runtime>();
+        let Some(slot) = runtime.players.get_mut(&hit.victim.0) else {
+            return amount;
+        };
+        if health * 2 >= max_health {
+            slot.death_reprieve_spent = false;
+        }
+        (slot.death_invulnerable_until_ms, slot.death_reprieve_spent)
+    };
+    if amount >= health {
+        if now < invulnerable_until {
+            amount = 0;
+        } else if health > 1 && !spent {
+            amount = health - 1;
+            let span = float_field(world, object, "deathinvulnerabletime").unwrap_or(0.0) as i64;
+            if let Some(slot) = world
+                .resource_mut::<Runtime>()
+                .players
+                .get_mut(&hit.victim.0)
+            {
+                slot.death_invulnerable_until_ms = now + span;
+                slot.death_reprieve_spent = true;
+            }
+        }
+    }
+    amount
 }
 
 fn world_entity(world: &World) -> Value {
@@ -612,7 +717,10 @@ fn deliver_answers(world: &mut World, client: u32) {
         .expect("checked above");
     let slot = runtime.players.get_mut(&client).expect("checked above");
     slot.menu = None;
-    if let Err(message) = super::natives::player::write_class_data(world, client, &answer.data) {
+    // SP has no MP player data; a class pick carries nothing to store.
+    if !single_player(world)
+        && let Err(message) = super::natives::player::write_class_data(world, client, &answer.data)
+    {
         world.resource_mut::<Runtime>().fault = Some(Fault::at(
             &Location {
                 module: "<engine>".into(),
@@ -651,10 +759,15 @@ pub(crate) struct PlayerSlot {
     pub weapon: u32,
     pub switching: bool,
     pub last_stand_until_ms: Option<i64>,
+    /// SP: a killing hit left 1 health; further hits are ignored until then.
+    pub death_invulnerable_until_ms: i64,
+    /// SP: that reprieve was used and health has not recovered since.
+    pub death_reprieve_spent: bool,
     pub has_radar: bool,
     pub radar_mode: crate::RadarMode,
     pub radar_blocked: bool,
     pub link: Option<PlayerLink>,
+    pub sp_shields: super::natives::sp_player::SpShields,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -694,10 +807,13 @@ impl PlayerSlot {
             weapon: 0,
             switching: false,
             last_stand_until_ms: None,
+            death_invulnerable_until_ms: 0,
+            death_reprieve_spent: false,
             has_radar: false,
             radar_mode: crate::RadarMode::Normal,
             radar_blocked: false,
             link: None,
+            sp_shields: Default::default(),
         }
     }
 }
@@ -875,7 +991,7 @@ pub(crate) fn sync_players(world: &mut World) {
             })
             .collect()
     };
-    for (client, joined) in clients {
+    for &(client, joined) in &clients {
         let slot = world.resource::<Runtime>().players.get(&client).cloned();
         match slot {
             Some(slot) if !slot.begun && joined => {
@@ -886,6 +1002,7 @@ pub(crate) fn sync_players(world: &mut World) {
             }
             Some(_) => {}
             None => {
+                let sp = single_player(world);
                 let mut runtime = world.resource_mut::<Runtime>();
                 let object = match runtime.create_player(client) {
                     Ok(object) => object,
@@ -902,7 +1019,12 @@ pub(crate) fn sync_players(world: &mut World) {
                         return;
                     }
                 };
-                runtime.players.insert(client, PlayerSlot::new(object));
+                let mut slot = PlayerSlot::new(object);
+                if sp {
+                    // SP has no spectator seat: an idle MP spectator would follow the partner.
+                    slot.sessionstate = "playing".into();
+                }
+                runtime.players.insert(client, slot);
                 let kept = runtime.restored_pers.remove(&client);
                 let pers = match kept {
                     Some(kept) => super::restart::attach(&mut runtime, kept),
@@ -921,16 +1043,47 @@ pub(crate) fn sync_players(world: &mut World) {
                 }
             }
         }
-        if joined
-            && !world.resource::<Runtime>().player_entries.is_empty()
-            && let Err(fault) = crate::script::runtime::start_player_entries(world)
-        {
-            world.resource_mut::<Runtime>().fault = Some(fault);
-            return;
-        }
         deliver_answers(world, client);
     }
+    let joined = clients.iter().filter(|(_, joined)| *joined).count();
+    if joined > 0
+        && !world.resource::<Runtime>().player_entries.is_empty()
+        && party_ready(world, joined, now)
+        && let Err(fault) = crate::script::runtime::start_player_entries(world)
+    {
+        world.resource_mut::<Runtime>().fault = Some(fault);
+        return;
+    }
     settle_deaths(world);
+}
+
+/// How long the SP entry waits for the rest of the party after the first player joins.
+const PARTY_WAIT_MS: i64 = 90_000;
+
+/// The SP entry runs once every lobby member has joined (`_load` snapshots `level.players`),
+/// or once the wait for a missing partner runs out. Two players make it a co-op game.
+fn party_ready(world: &mut World, joined: usize, now: i64) -> bool {
+    let mut runtime = world.resource_mut::<Runtime>();
+    let party = runtime.party.max(1);
+    let since = *runtime.party_since_ms.get_or_insert(now);
+    if joined < party && now - since < PARTY_WAIT_MS {
+        return false;
+    }
+    if joined < party {
+        diag::warn!(
+            Sim,
+            "spec ops: starting with {joined} of {party} players; the rest did not join in time"
+        );
+    }
+    drop(runtime);
+    let coop = joined > 1;
+    super::natives::iw4::set_dvar(world, "coop", if coop { "1" } else { "0" });
+    diag::info!(
+        Sim,
+        "spec ops: level entry starts with {joined} player(s) (party {party}, coop={})",
+        u8::from(coop)
+    );
+    true
 }
 
 pub(crate) fn team_name(team: i32) -> &'static str {
@@ -963,6 +1116,21 @@ pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<V
                 team => team,
             });
         }
+    }
+    // SP sentient fields the engine gives every player before script writes them.
+    if let Some(default) = match name {
+        "maxvisibledist" => Some(Value::Float(8192.0)),
+        "attackeraccuracy" => Some(Value::Float(1.0)),
+        "threatbias" | "ignoreme" => Some(Value::Int(0)),
+        _ => None,
+    } && single_player(world)
+    {
+        let mut runtime = world.resource_mut::<Runtime>();
+        let object = runtime.players.get(&client)?.object;
+        return Some(match runtime.object_field(object, name) {
+            Value::Undefined => default,
+            value => value,
+        });
     }
     if name == "sessionstate" {
         let runtime = world.resource::<Runtime>();
@@ -1167,6 +1335,11 @@ pub(crate) fn store_field(
             }
         }
         "name" => return Err("player field name is read-only".into()),
+        "laststand" if single_player(world) => {
+            let down = !matches!(value, Value::Undefined | Value::Int(0));
+            super::natives::sp_player::set_last_stand(&mut FrameWorld::from_world(world), id, down);
+            return Ok(false);
+        }
         _ => return Ok(false),
     }
     Ok(name != "team")

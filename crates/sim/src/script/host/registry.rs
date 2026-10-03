@@ -61,7 +61,11 @@ impl Default for NativeRegistry {
         super::spectators::register(&mut registry);
         super::anim::register(&mut registry);
         natives::sp::register(&mut registry);
+        natives::sp_player::register(&mut registry);
         super::actors::register(&mut registry);
+        super::actor_nav::register(&mut registry);
+        super::sentients::register(&mut registry);
+        super::actor_combat::register(&mut registry);
         registry
     }
 }

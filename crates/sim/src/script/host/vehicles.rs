@@ -217,7 +217,13 @@ fn fire_weapon(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Va
         .filter(|client| world.resource::<Runtime>().players.contains_key(client))
         .ok_or("vehicle owner is not connected")?;
     let end = std::array::from_fn(|i| from[i] + dir[i] * 1000.0);
-    super::weapons::launch(world, crate::ClientId(owner), weapon, from, end)
+    super::weapons::launch(
+        world,
+        crate::Attacker::Client(crate::ClientId(owner)),
+        weapon,
+        from,
+        end,
+    )
 }
 
 fn vec_field(runtime: &mut Runtime, object: u64, name: &str) -> [f32; 3] {

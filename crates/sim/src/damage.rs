@@ -176,7 +176,7 @@ fn apply_entity_blast(world: &mut FrameWorld, blast: &ExplosionBlast) {
             &crate::script::EntityHit {
                 target,
                 amount,
-                attacker: Some(blast.attacker),
+                attacker: Some(crate::Attacker::Client(blast.attacker)),
                 means,
                 weapon: blast.weapon,
                 point: mid,
@@ -206,7 +206,7 @@ pub(crate) fn apply_script_blast(
                 radius: blast.radius,
                 max: blast.max,
                 min: blast.min,
-                client: blast.attacker,
+                client: blast.attacker.and_then(crate::Attacker::client),
                 missile: None,
                 means: blast.means,
                 ignore_model: blast.inflictor,
@@ -240,6 +240,7 @@ pub(crate) fn apply_script_blast(
         let dir: [f32; 3] = std::array::from_fn(|i| victim_origin[i] - blast.origin[i]);
         let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
         let commit = blast.attacker.and_then(|attacker| {
+            let attacker = attacker.client()?;
             Some(DeathCommit {
                 victim: target,
                 victim_life,
@@ -285,7 +286,7 @@ pub(crate) fn apply_script_blast(
             radius: blast.radius,
             inner: blast.max,
             outer: blast.min,
-            attacker: blast.attacker,
+            attacker: blast.attacker.and_then(crate::Attacker::client),
             exclude: blast.inflictor,
             cone: None,
         },
@@ -320,6 +321,7 @@ pub(crate) fn apply_script_hit(world: &mut FrameWorld, tick: Tick, hit: &crate::
     let dir: [f32; 3] = std::array::from_fn(|i| victim_origin[i] - hit.origin[i]);
     let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
     let commit = hit.attacker.and_then(|attacker| {
+        let attacker = attacker.client()?;
         Some(DeathCommit {
             victim: target,
             victim_life,

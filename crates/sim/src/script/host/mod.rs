@@ -1,3 +1,5 @@
+pub(crate) mod actor_combat;
+pub(crate) mod actor_nav;
 pub(crate) mod actors;
 pub(crate) mod anim;
 pub mod animtree;
@@ -18,6 +20,7 @@ pub mod players;
 pub mod presence;
 pub mod registry;
 pub mod restart;
+pub(crate) mod sentients;
 pub mod spectators;
 pub mod tables;
 pub mod triggers;

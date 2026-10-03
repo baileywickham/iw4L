@@ -5,4 +5,5 @@ pub mod math;
 pub mod player;
 mod scene_effects;
 pub(crate) mod sp;
+pub(crate) mod sp_player;
 pub mod t5;

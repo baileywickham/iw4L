@@ -4,7 +4,7 @@ use crate::bullet_collision::{
     HistorySampleVerdict, MASK_BULLET_WORLD, bullet_trace_segments_filtered, glass_piece_from_hit,
 };
 use crate::frame::FrameWorld;
-use crate::identities::{DamageSource, LifeSequence, MatchRng, PelletId, ShotId};
+use crate::identities::{Attacker, DamageSource, LifeSequence, MatchRng, PelletId, ShotId};
 use crate::match_state::{ClientLifecycle, EventAudience};
 use crate::world::{ClientId, Tick};
 use crate::world_objects::glass_piece_is_solid;
@@ -32,7 +32,7 @@ use weapon_iw4::{
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AcceptedShot {
     pub shot_id: ShotId,
-    pub attacker: ClientId,
+    pub attacker: Attacker,
     pub attacker_life: LifeSequence,
 
     pub hand: u8,
@@ -57,7 +57,7 @@ pub struct Emission {
     pub combat_seed: u32,
     pub shot_id: ShotId,
     pub pellet: PelletId,
-    pub attacker: ClientId,
+    pub attacker: Attacker,
     pub attacker_life: LifeSequence,
     pub hand: u8,
     pub weapon: u32,
@@ -116,7 +116,7 @@ pub enum ShotCollisionGeometry {
 pub struct ShotCollisionVerdict {
     pub shot_id: ShotId,
     pub pellet: PelletId,
-    pub attacker: ClientId,
+    pub attacker: Attacker,
     pub geometry: ShotCollisionGeometry,
     pub terminal: Option<ColliderId>,
     pub startsolid: bool,
@@ -736,7 +736,7 @@ pub(crate) fn advance_weapon_command(
                     );
                     accepted.push(AcceptedShot {
                         shot_id,
-                        attacker: *id,
+                        attacker: Attacker::Client(*id),
                         attacker_life: life,
                         hand: _hand_i,
                         weapon,
@@ -1080,6 +1080,62 @@ pub(crate) fn phase_emit(world: &FrameWorld, shots: &[AcceptedShot]) -> Vec<Emis
     out
 }
 
+fn attacker_number(world: &FrameWorld, attacker: Attacker) -> i32 {
+    match attacker {
+        Attacker::Client(client) => client.0 as i32,
+        Attacker::Entity(id) => world.gentity_number(id).unwrap_or(ENTITYNUM_NONE),
+    }
+}
+
+/// An actor's bullet reaching a player: the location-scaled amount through the
+/// player damage path, with the actor as attacker. True when it killed.
+fn entity_shot_player(
+    world: &mut FrameWorld,
+    tick: Tick,
+    em: &Emission,
+    victim: ClientId,
+    hitloc: u8,
+    amount: i32,
+    point: [f32; 3],
+) -> bool {
+    if !world
+        .client_meta(victim)
+        .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
+    {
+        return false;
+    }
+    let scale = world
+        .combat_facts_for(em.weapon)
+        .map_or(1.0, |facts| facts.location_scale(hitloc));
+    let amount = ((amount as f32) * scale) as i32;
+    if amount <= 0 {
+        return false;
+    }
+    let hit = crate::script_player::Hit {
+        victim,
+        attacker: Some(em.attacker),
+        amount,
+        flags: 0,
+        means: crate::script_player::means(
+            world,
+            DamageSource::Shot(em.shot_id),
+            em.weapon,
+            hitloc,
+            false,
+        ),
+        weapon: em.weapon,
+        point,
+        dir: em.direction,
+        hitloc,
+        inflictor: None,
+        commit: None,
+    };
+    crate::script::player_damage(world.ecs(), tick, &hit);
+    world
+        .client_meta(victim)
+        .is_some_and(|m| m.lifecycle == ClientLifecycle::Dead)
+}
+
 fn segment_is_shield(collider: Option<ColliderId>) -> bool {
     matches!(
         collider,
@@ -1102,7 +1158,11 @@ pub(crate) fn phase_trace(
         let Some(facts) = world.combat_facts_for(em.weapon) else {
             continue;
         };
-        let query = world.lagcomp_query_for(em.attacker, tick);
+        let query = match em.attacker {
+            Attacker::Client(client) => world.lagcomp_query_for(client, tick),
+            Attacker::Entity(_) => world.current_query(tick),
+        };
+        let attacker_number = attacker_number(world, em.attacker);
         let end = [
             em.origin[0] + em.direction[0] * em.max_range,
             em.origin[1] + em.direction[1] * em.max_range,
@@ -1145,9 +1205,9 @@ pub(crate) fn phase_trace(
                 start: em.origin,
                 end,
                 mask: MASK_BULLET_WORLD,
-                ignore: Some(em.attacker),
+                ignore: em.attacker.client(),
                 ignore_hit: None,
-                ignore_model: None,
+                ignore_model: em.attacker.entity(),
             },
             pen,
             world.penetration_table(),
@@ -1247,7 +1307,10 @@ pub(crate) fn phase_trace(
             };
             let scaled =
                 ((bullet_damage_at_distance(&facts, dist) as f32) * segment.damage_mult) as i32;
-            if !exit && world.publishes_snapshot() {
+            if !exit
+                && world.publishes_snapshot()
+                && let Attacker::Client(client) = em.attacker
+            {
                 let means = crate::script_player::means(
                     world,
                     DamageSource::Shot(em.shot_id),
@@ -1260,7 +1323,7 @@ pub(crate) fn phase_trace(
                     segment.start,
                     segment.end,
                     scaled,
-                    em.attacker,
+                    client,
                     None,
                     means,
                 );
@@ -1277,6 +1340,13 @@ pub(crate) fn phase_trace(
                 let mut fatal = false;
                 if world.publishes_snapshot()
                     && scaled > 0
+                    && let Attacker::Entity(_) = em.attacker
+                {
+                    fatal =
+                        entity_shot_player(world, tick, &em, victim, hitloc, scaled, segment.end);
+                } else if world.publishes_snapshot()
+                    && scaled > 0
+                    && let Attacker::Client(attacker) = em.attacker
                     && let Some(vmeta) = world.client_meta(victim)
                     && vmeta.lifecycle == ClientLifecycle::Alive
                 {
@@ -1284,7 +1354,7 @@ pub(crate) fn phase_trace(
                         splash: false,
                         source: DamageSource::Shot(em.shot_id),
                         pellet: em.pellet,
-                        attacker: em.attacker,
+                        attacker,
                         attacker_life: em.attacker_life,
                         target: victim,
                         target_life: victim_life,
@@ -1304,8 +1374,8 @@ pub(crate) fn phase_trace(
                 }
             }
             let payload = crate::EntityEventPayload {
-                number: em.attacker.0 as i32,
-                attacker_entity_num: em.attacker.0 as i32,
+                number: attacker_number,
+                attacker_entity_num: attacker_number,
                 other_entity_num: match segment.collider {
                     Some(
                         ColliderId::EntityDObjBone { owner, .. }
@@ -1364,7 +1434,7 @@ pub(crate) fn phase_trace(
                     }
                 } else if fx_iw4::impact_table_row(facts.impact_type, false).is_some() {
                     world.push_pellet_fx(crate::PelletFxRecord {
-                        attacker: em.attacker.0 as i32,
+                        attacker: attacker_number,
                         weapon: em.weapon,
                         correlation: em.shot_id.0,
                         pellet: em.pellet.0,
@@ -1379,7 +1449,7 @@ pub(crate) fn phase_trace(
                 }
             } else {
                 world.push_pellet_fx(crate::PelletFxRecord {
-                    attacker: em.attacker.0 as i32,
+                    attacker: attacker_number,
                     weapon: em.weapon,
                     correlation: em.shot_id.0,
                     pellet: em.pellet.0,
@@ -1408,7 +1478,7 @@ pub(crate) fn phase_trace(
                             owner,
                             bone,
                             scaled as u32,
-                            Some(em.attacker),
+                            em.attacker.client(),
                         )
                     {
                         continue;

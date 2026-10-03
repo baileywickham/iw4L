@@ -12,12 +12,15 @@ pub(crate) fn fire_accepted_shot(world: &mut FrameWorld, tick: crate::Tick, shot
     let Some(combat) = world.combat_facts_for(shot.weapon) else {
         return;
     };
+    let Some(owner) = shot.attacker.client() else {
+        return;
+    };
     match fire_weapon_kind(combat.weap_type, combat.weap_class) {
         Some(FireWeaponKind::Bullet) => {}
         Some(FireWeaponKind::GrenadeLauncher) => {
             spawn_grenade_projectile(
                 world,
-                shot.attacker,
+                owner,
                 shot.weapon,
                 tick,
                 shot.origin,
@@ -32,7 +35,7 @@ pub(crate) fn fire_accepted_shot(world: &mut FrameWorld, tick: crate::Tick, shot
         Some(FireWeaponKind::ThrownGrenade) => {
             spawn_grenade_projectile(
                 world,
-                shot.attacker,
+                owner,
                 shot.weapon,
                 tick,
                 shot.origin,
@@ -47,24 +50,30 @@ pub(crate) fn fire_accepted_shot(world: &mut FrameWorld, tick: crate::Tick, shot
     }
 }
 
+/// `MagicBullet`: bullets trace now (`None`); projectiles launch and are returned.
 pub(crate) fn magic_bullet(
     world: &mut FrameWorld,
     tick: crate::Tick,
-    owner: crate::ClientId,
+    attacker: crate::Attacker,
     weapon: u32,
     start: [f32; 3],
     end: [f32; 3],
-) -> Result<ProjectileState, String> {
+) -> Result<Option<ProjectileState>, String> {
     let combat = world
         .combat_facts_for(weapon)
         .ok_or_else(|| format!("weapon {weapon} has no combat facts"))?;
-    let attacker_life = world
-        .client_meta(owner)
-        .ok_or("MagicBullet owner is not connected")?
-        .life_sequence;
+    let attacker_life = match attacker {
+        crate::Attacker::Client(owner) => {
+            world
+                .client_meta(owner)
+                .ok_or("MagicBullet owner is not connected")?
+                .life_sequence
+        }
+        crate::Attacker::Entity(_) => crate::LifeSequence::default(),
+    };
     let shot = AcceptedShot {
         shot_id: crate::ShotId(0),
-        attacker: owner,
+        attacker,
         attacker_life,
         hand: 0,
         weapon,
@@ -79,7 +88,16 @@ pub(crate) fn magic_bullet(
         owner_velocity: [0.0; 3],
         spread_degrees: 0.0,
     };
-    let launched = match fire_weapon_kind(combat.weap_type, combat.weap_class) {
+    let kind = fire_weapon_kind(combat.weap_type, combat.weap_class);
+    if kind == Some(FireWeaponKind::Bullet) {
+        let emissions = crate::combat::phase_emit(world, core::slice::from_ref(&shot));
+        crate::combat::phase_trace(world, tick, &emissions);
+        return Ok(None);
+    }
+    let crate::Attacker::Client(owner) = attacker else {
+        return Err("MagicBullet projectiles need an owning player".into());
+    };
+    let launched = match kind {
         Some(FireWeaponKind::Missile) => fire_missile(world, tick, &shot),
         Some(kind @ (FireWeaponKind::GrenadeLauncher | FireWeaponKind::ThrownGrenade)) => {
             let launch = if kind == FireWeaponKind::GrenadeLauncher {
@@ -109,10 +127,12 @@ pub(crate) fn magic_bullet(
             .flatten()
         }
         Some(FireWeaponKind::Bullet) | None => {
-            return Err("MagicBullet bullets are not simulated".into());
+            return Err(format!("weapon {weapon} fires nothing"));
         }
     };
-    launched.ok_or_else(|| format!("weapon {weapon} launched no projectile"))
+    launched
+        .map(Some)
+        .ok_or_else(|| format!("weapon {weapon} launched no projectile"))
 }
 
 fn fire_missile(
@@ -143,8 +163,9 @@ fn fire_missile(
         let (_, right, _) = math_iw4::angle_vectors(shot.angles);
         origin = core::array::from_fn(|i| origin[i] + right[i] * 2.5);
     }
+    let owner = shot.attacker.client()?;
     let lock = world
-        .client_meta(shot.attacker)
+        .client_meta(owner)
         .map(|m| m.weapon_lock)
         .filter(|lock| lock.can_fire(shot.weapon, shot.attacker_life.0));
     let guide = crate::MissileGuide {
@@ -187,7 +208,7 @@ fn fire_missile(
     perf::projectile(shot.weapon);
     let projectile = ProjectileState {
         id,
-        owner: shot.attacker,
+        owner,
         owner_life: shot.attacker_life,
         weapon: shot.weapon,
         origin,

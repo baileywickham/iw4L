@@ -128,9 +128,22 @@ pub fn assemble_listen_app() -> App {
     app
 }
 
+/// `IW4L_WINDOW_POS=x,y` places the window in physical pixels (two clients side by side).
+fn window_position() -> Option<IVec2> {
+    let text = std::env::var("IW4L_WINDOW_POS").ok()?;
+    let (x, y) = text.split_once(',')?;
+    Some(IVec2::new(x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
 pub fn default_plugins_with_quiet_log(mut window: WindowPlugin) -> bevy::app::PluginGroupBuilder {
     if let Some(primary) = window.primary_window.as_mut() {
         primary.desired_maximum_frame_latency = core::num::NonZeroU32::new(frame_latency());
+        if std::env::var("IW4L_WINDOW_ON_TOP").is_ok_and(|v| v == "1") {
+            primary.window_level = bevy::window::WindowLevel::AlwaysOnTop;
+        }
+        if let Some(at) = window_position() {
+            primary.position = bevy::window::WindowPosition::At(at);
+        }
     }
     let mut wgpu = WgpuSettings::default();
     wgpu.features |= WgpuFeatures::TEXTURE_FORMAT_16BIT_NORM

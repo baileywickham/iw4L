@@ -185,10 +185,19 @@ impl DObj {
                             ),
                         })?;
                     let range = slot.base..slot.base + slot.bone_count;
-                    let found = bones[range.clone()]
-                        .iter()
-                        .position(|b| b.name == a.tag)
-                        .map(|i| slot.base + i);
+                    // An empty tag merges skeletons: the attachment's root
+                    // rides the parent bone of the same name, else its root.
+                    let found = if a.tag.is_empty() {
+                        let root = model.bone_names.first();
+                        bones[range.clone()]
+                            .iter()
+                            .position(|b| Some(&b.name) == root)
+                            .or(Some(0))
+                            .filter(|_| slot.bone_count > 0)
+                    } else {
+                        bones[range.clone()].iter().position(|b| b.name == a.tag)
+                    }
+                    .map(|i| slot.base + i);
                     Some(found.ok_or_else(|| DObjError::AttachTag {
                         model: model.name.clone(),
                         tag: a.tag.clone(),

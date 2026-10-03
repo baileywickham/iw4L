@@ -898,6 +898,17 @@ pub(crate) fn is_touching(world: &mut World, a: u64, b: u64) -> bool {
     touching.unwrap_or(false)
 }
 
+/// `SV_EntityContact(point, point, volume)`.
+pub(crate) fn contains_point(world: &mut World, volume_entity: u64, point: [f32; 3]) -> bool {
+    let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());
+    let inside = {
+        let frame = FrameWorld::from_world(world);
+        volume(&mut runtime, &frame, volume_entity).map(|v| v.touches(point, point))
+    };
+    *world.resource_mut::<Runtime>() = runtime;
+    inside.unwrap_or(false)
+}
+
 pub(crate) fn dispatch_triggers(world: &mut World) {
     refresh_claims(world);
     let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());

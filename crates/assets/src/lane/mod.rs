@@ -97,6 +97,7 @@ pub struct ZoneWeapons {
     pub fpv_meshes: FpvMeshBuild,
     pub xanims: XAnimBuild,
     pub materials: Option<asset_material::MaterialCatalog>,
+    pub bodies: BodyMeshBuild,
 }
 
 #[derive(Default)]

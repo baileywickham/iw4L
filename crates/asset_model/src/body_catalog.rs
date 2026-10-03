@@ -161,6 +161,15 @@ impl BodyMeshBuild {
         self.catalog.entries.entry(name).or_insert(entry);
     }
 
+    /// Takes another zone's bodies (a Spec Ops mission's co-op bodies) over this map's.
+    pub fn absorb(&mut self, other: BodyMeshBuild) -> usize {
+        let before = self.catalog.entries.len();
+        for (name, entry) in other.catalog.entries {
+            self.insert_entry(name, entry);
+        }
+        self.catalog.entries.len() - before
+    }
+
     pub fn insert(&mut self, skel: crate::ModelSkel) {
         self.insert_captured(skel, None);
     }

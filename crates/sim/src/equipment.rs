@@ -966,7 +966,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                                 crate::script::EntityHit {
                                     target,
                                     amount: facts.impact_damage.max(0),
-                                    attacker: Some(projectile.owner),
+                                    attacker: Some(crate::Attacker::Client(projectile.owner)),
                                     means: "",
                                     weapon: projectile.weapon,
                                     point: end,
@@ -1122,7 +1122,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                                 crate::script::EntityHit {
                                     target,
                                     amount: facts.impact_damage.max(0),
-                                    attacker: Some(projectile.owner),
+                                    attacker: Some(crate::Attacker::Client(projectile.owner)),
                                     means: "",
                                     weapon: projectile.weapon,
                                     point: end,

@@ -42,6 +42,29 @@ impl ShotId {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PelletId(pub u16);
 
+/// Who fired or dealt damage: a client, or a script entity (an actor) by its presence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Attacker {
+    Client(crate::ClientId),
+    Entity(ScriptModelId),
+}
+
+impl Attacker {
+    pub const fn client(self) -> Option<crate::ClientId> {
+        match self {
+            Self::Client(id) => Some(id),
+            Self::Entity(_) => None,
+        }
+    }
+
+    pub const fn entity(self) -> Option<ScriptModelId> {
+        match self {
+            Self::Entity(id) => Some(id),
+            Self::Client(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ScriptModelId(pub(crate) u32);
 

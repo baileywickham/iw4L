@@ -395,6 +395,14 @@ fn print(
             (text, String::new())
         }
     };
+    if super::players::single_player(world) {
+        diag::info!(
+            Sim,
+            "gsc print: client={} {}",
+            recipient.map_or_else(|| "all".to_owned(), |c| c.to_string()),
+            template.trim_start_matches(crate::HUD_STRING_PLAIN)
+        );
+    }
     FrameWorld::from_world(world).push_print(crate::PendingPrint {
         recipient: recipient.map(crate::ClientId),
         bold,

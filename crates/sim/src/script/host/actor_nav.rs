@@ -1,0 +1,986 @@
+//! Actor goals, paths and movement: the script goal (`setgoal*`), A* over the
+//! map's path nodes, kinematic path following, facing, node claims, `"goal"`,
+//! and the move/stop animscript switch.
+
+use super::actors::{actor_of, run_script};
+use super::args::{arg, float, string, vector};
+use super::natives::engine::{entity_id, path_node_object};
+use crate::actor::path::{self, ActorPath, NEAREST_NODE_DIST, PathSearch, SearchStep};
+use crate::actor::{Actor, ActorId, ActorPool, MoveMode, Orient};
+use crate::frame::FrameWorld;
+use crate::script::runtime::{raise, thread_running};
+use crate::script::{Arc, Namespace, NativeRegistry, Runtime, Value};
+use bevy_ecs::prelude::World;
+
+/// A* expansions all actors share per tick; a search left over resumes next tick.
+pub(crate) const EXPANSION_BUDGET: u32 = 4096;
+/// `pathWaitTime` after a failed search (`Actor_HandleInvalidPath`).
+const BAD_PATH_WAIT_MS: i64 = 500;
+const RUN_SPEED: f32 = 180.0;
+const WALK_SPEED: f32 = 70.0;
+/// `iPathEndTime - level.time < 200`: the engine names the last 200 ms `stop_soon`.
+const STOP_SOON_SECONDS: f32 = 0.2;
+const TICK_SECONDS: f32 = crate::MATCH_TICK_MS as f32 / 1000.0;
+/// Degrees an actor turns per tick (`anglelerprate` 540/s).
+const TURN_PER_TICK: f32 = 27.0;
+/// `Actor_PointNearNode`.
+const NODE_ARRIVE_DIST: f32 = 15.0;
+const DIRECT_PATH_DIST: f32 = 256.0;
+const SKIP_CHECK_DIST: f32 = 1024.0;
+const DOOR_LOOKAHEAD: f32 = 256.0;
+const STEP_HEIGHT: f32 = 18.0;
+/// `MASK_ACTOR_SOLID` and the sight mask `Path_NearestNode` uses.
+const MASK_ACTOR_SOLID: u32 = 0x0282_0011;
+const MASK_NODE_SIGHT: u32 = 0x0082_0011;
+const ACTOR_MINS: [f32; 3] = [-15.0, -15.0, 0.0];
+const ACTOR_MAXS: [f32; 3] = [15.0, 15.0, 72.0];
+/// Anim modes where code does not move the actor (anim deltas only).
+const ANIM_DRIVEN: [&str; 4] = ["zonly_physics", "nophysics", "noclip", "angle deltas"];
+
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn length(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+fn length2(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1]).sqrt()
+}
+
+fn yaw_of(v: [f32; 3]) -> f32 {
+    v[1].atan2(v[0]).to_degrees()
+}
+
+fn angle_delta(to: f32, from: f32) -> f32 {
+    (to - from + 540.0).rem_euclid(360.0) - 180.0
+}
+
+fn origin(world: &mut World, object: u64) -> [f32; 3] {
+    match super::players::entity_field(world, object, "origin") {
+        Value::Vector(v) => v,
+        _ => [0.0; 3],
+    }
+}
+
+fn actor(world: &World, id: ActorId) -> Option<&Actor> {
+    world.resource::<ActorPool>().actors.get(&id)
+}
+
+fn with_actor<T>(world: &mut World, id: ActorId, f: impl FnOnce(&mut Actor) -> T) -> Option<T> {
+    world.resource_mut::<ActorPool>().actors.get_mut(&id).map(f)
+}
+
+fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), String> {
+    match receiver {
+        Value::Object(object) => actor_of(world, *object)
+            .map(|id| (id, *object))
+            .ok_or_else(|| "receiver is not an actor".into()),
+        _ => Err("receiver is not an actor".into()),
+    }
+}
+
+fn node_index(world: &World, value: &Value) -> Result<u16, String> {
+    let Value::Object(object) = value else {
+        return Err(format!("{} is not a path node", super::args::kind(value)));
+    };
+    world
+        .resource::<Runtime>()
+        .path_nodes
+        .iter()
+        .position(|slot| *slot == Some(*object))
+        .map(|i| i as u16)
+        .ok_or_else(|| "not a path node".into())
+}
+
+pub(crate) fn node_value(world: &mut World, node: Option<u16>) -> Value {
+    node.and_then(|n| path_node_object(world, n as usize).ok())
+        .unwrap_or(Value::Undefined)
+}
+
+fn hull_clear(frame: &FrameWorld, from: [f32; 3], to: [f32; 3]) -> bool {
+    let mins = [ACTOR_MINS[0], ACTOR_MINS[1], STEP_HEIGHT];
+    let maxs = [ACTOR_MAXS[0], ACTOR_MAXS[1], 48.0];
+    let t = frame.trace_world(from, to, mins, maxs, MASK_ACTOR_SOLID);
+    t.fraction >= 1.0 && t.startsolid == 0
+}
+
+/// `Path_NearestNode`: the closest linked node within reach that the actor hull can see.
+fn nearest_node(frame: &FrameWorld, at: [f32; 3]) -> Option<u16> {
+    let graph = frame.path_graph();
+    let mins = [ACTOR_MINS[0], ACTOR_MINS[1], ACTOR_MINS[2] + 17.0];
+    for radius in [NEAREST_NODE_DIST, NEAREST_NODE_DIST * 3.0] {
+        let lowered = [at[0], at[1], at[2] - 120.0];
+        let candidates = path::nodes_in_cylinder(graph, lowered, radius, 184.0);
+        let mut unlinked = Vec::new();
+        for &n in candidates.iter().take(64) {
+            let node = &graph.nodes[n as usize];
+            if node.links.is_empty() {
+                unlinked.push(n);
+                continue;
+            }
+            let inside = (0..2).all(|i| (at[i] - node.origin[i]).abs() < 16.0)
+                && at[2] > node.origin[2] - 1.0
+                && at[2] < node.origin[2] + 73.0;
+            if inside {
+                return Some(n);
+            }
+            let t = frame.trace_world(at, node.origin, mins, ACTOR_MAXS, MASK_NODE_SIGHT);
+            if t.fraction >= 1.0 && t.startsolid == 0 {
+                return Some(n);
+            }
+        }
+        for n in unlinked {
+            let t = frame.trace_world(
+                at,
+                graph.nodes[n as usize].origin,
+                mins,
+                ACTOR_MAXS,
+                MASK_NODE_SIGHT,
+            );
+            if t.fraction >= 1.0 && t.startsolid == 0 {
+                return Some(n);
+            }
+        }
+        if let Some(&n) = candidates.first().filter(|_| radius > NEAREST_NODE_DIST) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn in_volume(world: &mut World, volume: Option<u64>, point: [f32; 3]) -> bool {
+    volume.is_none_or(|v| {
+        !world.resource::<Runtime>().live(&v) || super::triggers::contains_point(world, v, point)
+    })
+}
+
+fn point_at_goal(world: &mut World, id: ActorId, point: [f32; 3]) -> bool {
+    let Some((cylinder, volume)) =
+        actor(world, id).map(|a| (a.point_in_goal_cylinder(point), a.goal.volume))
+    else {
+        return false;
+    };
+    cylinder && in_volume(world, volume, point)
+}
+
+fn release_claim(world: &mut World, id: ActorId) {
+    let mut pool = world.resource_mut::<ActorPool>();
+    let Some(node) = pool.actors.get_mut(&id).and_then(|a| a.claimed.take()) else {
+        return;
+    };
+    if pool.claims.get(&node) == Some(&id) {
+        pool.claims.remove(&node);
+    }
+    if let Some(a) = pool.actors.get_mut(&id) {
+        a.prev_claimed = Some(node);
+    }
+}
+
+fn claim(world: &mut World, id: ActorId, node: u16) {
+    if actor(world, id).and_then(|a| a.claimed) == Some(node) {
+        return;
+    }
+    if world
+        .resource::<ActorPool>()
+        .claims
+        .get(&node)
+        .is_some_and(|owner| *owner != id)
+    {
+        return;
+    }
+    release_claim(world, id);
+    let mut pool = world.resource_mut::<ActorPool>();
+    pool.claims.insert(node, id);
+    if let Some(a) = pool.actors.get_mut(&id) {
+        a.claimed = Some(node);
+    }
+}
+
+pub(crate) fn release_all(world: &mut World, id: ActorId) {
+    world
+        .resource_mut::<ActorPool>()
+        .claims
+        .retain(|_, owner| *owner != id);
+}
+
+fn clear_path(world: &mut World, id: ActorId) {
+    with_actor(world, id, |a| {
+        a.path = None;
+        a.search = None;
+        a.velocity = [0.0; 3];
+        a.move_mode = MoveMode::Stop;
+    });
+}
+
+fn set_goal_pos(world: &mut World, id: ActorId, pos: [f32; 3], node: Option<u16>) {
+    let volume = actor(world, id).and_then(|a| a.goal.volume);
+    let keep_volume = volume.filter(|v| {
+        world.resource::<Runtime>().live(v) && super::triggers::contains_point(world, *v, pos)
+    });
+    with_actor(world, id, |a| {
+        a.goal.pos = pos;
+        a.goal.node = node;
+        a.goal.entity = None;
+        a.goal.volume = keep_volume;
+        a.path_wait_ms = 0;
+        a.goal_reached = false;
+    });
+}
+
+/// What the actor paths to this tick: a node to stand on, or the goal position
+/// when it is outside the goal.
+fn wanted_target(world: &mut World, id: ActorId, at: [f32; 3]) -> Option<([f32; 3], Option<u16>)> {
+    let (goal, has_path, final_goal) = {
+        let a = actor(world, id)?;
+        (
+            a.goal.clone(),
+            a.path.is_some(),
+            a.path.as_ref().map(|p| p.final_goal),
+        )
+    };
+    if let Some(node) = goal.node {
+        let near = (at[2] - goal.pos[2]).powi(2) <= 80.0 * 80.0
+            && length2(sub(at, goal.pos)) <= NODE_ARRIVE_DIST;
+        return (has_path || !near).then_some((goal.pos, Some(node)));
+    }
+    if let Some(end) = final_goal
+        && point_at_goal(world, id, end)
+    {
+        return Some((end, None));
+    }
+    (!point_at_goal(world, id, at)).then_some((goal.pos, None))
+}
+
+fn begin_path(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    at: [f32; 3],
+    target: [f32; 3],
+    now: i64,
+) {
+    let frame = FrameWorld::from_world(world);
+    let lifted = |p: [f32; 3]| add(p, [0.0, 0.0, 1.0]);
+    if length(sub(target, at)) < DIRECT_PATH_DIST
+        && (target[2] - at[2]).abs() < 48.0
+        && hull_clear(&frame, lifted(at), lifted(target))
+    {
+        with_actor(world, id, |a| {
+            a.path = Some(ActorPath::direct(target));
+            a.search = None;
+        });
+        return;
+    }
+    let graph = frame.path_graph();
+    if graph.is_empty() {
+        bad_path(world, id, object, target, now, "no path nodes");
+        return;
+    }
+    let cached = actor(world, id)
+        .and_then(|a| a.nearest)
+        .filter(|(_, from)| length(sub(*from, at)) < 32.0)
+        .map(|(n, _)| n);
+    let frame = FrameWorld::from_world(world);
+    let from = cached.or_else(|| nearest_node(&frame, at));
+    let to = nearest_node(&frame, target);
+    let (Some(from), Some(to)) = (from, to) else {
+        bad_path(world, id, object, target, now, "no nearest node");
+        return;
+    };
+    let search = PathSearch::new(frame.path_graph(), from, to);
+    with_actor(world, id, |a| {
+        a.nearest = Some((from, at));
+        a.search = Some((search, target));
+    });
+}
+
+fn bad_path(world: &mut World, id: ActorId, object: u64, target: [f32; 3], now: i64, why: &str) {
+    let first = with_actor(world, id, |a| {
+        a.search = None;
+        a.path = None;
+        std::mem::replace(&mut a.path_wait_ms, now + BAD_PATH_WAIT_MS) == 0
+    });
+    if first == Some(true) {
+        diag::info!(
+            Sim,
+            "actor: entity {object} bad_path to {:.0} {:.0} {:.0}: {why}",
+            target[0],
+            target[1],
+            target[2]
+        );
+    }
+    raise(
+        world,
+        Value::Object(object),
+        "bad_path",
+        vec![Value::Vector(target)],
+    );
+}
+
+fn continue_search(world: &mut World, id: ActorId, object: u64, now: i64, budget: &mut u32) {
+    let Some((mut search, target)) = with_actor(world, id, |a| a.search.take()).flatten() else {
+        return;
+    };
+    let step = {
+        let frame = FrameWorld::from_world(world);
+        search.run(frame.path_graph(), budget)
+    };
+    match step {
+        SearchStep::Pending => {
+            with_actor(world, id, |a| a.search = Some((search, target)));
+        }
+        SearchStep::Failed => bad_path(world, id, object, target, now, "no route"),
+        SearchStep::Found(nodes) => {
+            let path =
+                ActorPath::through(FrameWorld::from_world(world).path_graph(), &nodes, target);
+            diag::info!(
+                Sim,
+                "actor: entity {object} path nodes={} expanded={} length={:.0} to {:.0} {:.0} {:.0}",
+                nodes.len(),
+                search.expanded,
+                path.remaining(origin(world, object)),
+                target[0],
+                target[1],
+                target[2]
+            );
+            with_actor(world, id, |a| a.path = Some(path));
+        }
+    }
+}
+
+fn floor_snap(frame: &FrameWorld, at: [f32; 3]) -> Option<f32> {
+    let t = frame.trace_world(
+        add(at, [0.0, 0.0, STEP_HEIGHT]),
+        sub(at, [0.0, 0.0, 2.0 * STEP_HEIGHT]),
+        [-4.0, -4.0, 0.0],
+        [4.0, 4.0, 4.0],
+        MASK_ACTOR_SOLID,
+    );
+    (t.fraction < 1.0 && t.startsolid == 0).then_some(t.endpos[2])
+}
+
+/// Kinematic path following: anim deltas replace the step once root motion exists.
+fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f32; 3] {
+    let Some(mut path) = with_actor(world, id, |a| a.path.take()).flatten() else {
+        return at;
+    };
+    let (walk_dist, rate) = {
+        let a = actor(world, id).unwrap();
+        (a.float_field("walkdist"), a.float_field("moveplaybackrate"))
+    };
+    let rate = match world
+        .resource_mut::<Runtime>()
+        .object_field(object, "moveplaybackrate")
+    {
+        Value::Float(r) if r > 0.0 => r,
+        Value::Int(r) if r > 0 => r as f32,
+        _ if rate > 0.0 => rate,
+        _ => 1.0,
+    };
+    let frame = FrameWorld::from_world(world);
+    let mode = if length(sub(path.final_goal, at)) >= walk_dist {
+        MoveMode::Run
+    } else {
+        MoveMode::Walk
+    };
+    let speed = match mode {
+        MoveMode::Run => RUN_SPEED,
+        _ => WALK_SPEED,
+    } * rate;
+    let mode = if path.remaining(at) < speed * STOP_SOON_SECONDS {
+        MoveMode::StopSoon
+    } else {
+        mode
+    };
+    if path.may_skip() {
+        let after = path.points[path.next + 1].pos;
+        if length(sub(after, at)) < SKIP_CHECK_DIST
+            && (after[2] - at[2]).abs() < 64.0
+            && hull_clear(
+                &frame,
+                add(at, [0.0, 0.0, 1.0]),
+                add(after, [0.0, 0.0, 1.0]),
+            )
+        {
+            path.next += 1;
+        }
+    }
+    let mut pos = at;
+    let mut step = speed * TICK_SECONDS;
+    let mut traversing = false;
+    while step > 0.0
+        && let Some(point) = path.current().copied()
+    {
+        traversing = point.traverse;
+        let to = sub(point.pos, pos);
+        let d = length(to);
+        if d <= step {
+            pos = point.pos;
+            step -= d;
+            path.next += 1;
+        } else {
+            pos = add(pos, to.map(|c| c * step / d));
+            step = 0.0;
+        }
+    }
+    if !traversing && let Some(z) = floor_snap(&frame, pos) {
+        pos[2] = z;
+    }
+    let done = path.current().is_none();
+    let look = path
+        .current()
+        .map(|p| sub(p.pos, pos))
+        .filter(|v| length2(*v) > 0.1)
+        .unwrap_or_else(|| sub(pos, at));
+    let look_len = length2(look);
+    let moved = sub(pos, at);
+    with_actor(world, id, |a| {
+        a.velocity = moved.map(|c| c / TICK_SECONDS);
+        a.distance_moved += length2(moved);
+        if look_len > 0.1 {
+            a.lookahead_dir = [look[0] / look_len, look[1] / look_len, 0.0];
+            a.lookahead_dist = look_len.min(path.remaining(pos));
+        }
+        if done {
+            a.move_mode = MoveMode::Stop;
+            a.velocity = [0.0; 3];
+        } else {
+            a.move_mode = mode;
+            a.path = Some(path);
+        }
+    });
+    pos
+}
+
+fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
+    let Some((orient, moving, look, claimed)) =
+        actor(world, id).map(|a| (a.orient, a.path.is_some(), a.lookahead_dir, a.claimed))
+    else {
+        return;
+    };
+    let wanted = match orient {
+        Orient::Angle(yaw) => Some(yaw),
+        Orient::Point(p) => (length2(sub(p, at)) > 1.0).then(|| yaw_of(sub(p, at))),
+        Orient::Current => None,
+        Orient::Motion | Orient::Enemy | Orient::Default if moving => {
+            (length2(look) > 0.1).then(|| yaw_of(look))
+        }
+        Orient::Default => claimed.and_then(|n| {
+            let node = FrameWorld::from_world(world)
+                .path_graph()
+                .nodes
+                .get(n as usize)?
+                .clone();
+            (length2(sub(node.origin, at)) <= NODE_ARRIVE_DIST && node.node_type != 1)
+                .then_some(node.angle)
+        }),
+        Orient::Motion | Orient::Enemy => None,
+    };
+    let Some(wanted) = wanted else {
+        return;
+    };
+    let mut runtime = world.resource_mut::<Runtime>();
+    let angles = match runtime.object_field(object, "angles") {
+        Value::Vector(v) => v,
+        _ => [0.0; 3],
+    };
+    let delta = angle_delta(wanted, angles[1]);
+    if delta.abs() < 0.01 {
+        return;
+    }
+    let yaw = angles[1] + delta.clamp(-TURN_PER_TICK, TURN_PER_TICK);
+    runtime.set_object_field(object, "angles", Value::Vector([0.0, yaw, 0.0]));
+}
+
+/// Animscripts that run to their end before the state picks again.
+const STICKY_ANIMSCRIPTS: [&str; 2] = ["pain", "death"];
+
+/// The animscript the actor's state wants: `move` while it has a path, `combat`
+/// with an enemy, else `stop`.
+fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
+    let Some((current, started, moving, enemy)) = actor(world, id).map(|a| {
+        (
+            a.animscript.clone(),
+            a.animscript_started_ms,
+            a.path.is_some(),
+            a.enemy.is_some(),
+        )
+    }) else {
+        return;
+    };
+    if let Some((name, serial)) = &current
+        && STICKY_ANIMSCRIPTS.contains(&&**name)
+        && thread_running(world, *serial)
+    {
+        return;
+    }
+    let wanted: Arc<str> = if moving {
+        "move".into()
+    } else if enemy {
+        "combat".into()
+    } else {
+        "stop".into()
+    };
+    if let Some((name, serial)) = &current
+        && *name == wanted
+        && (thread_running(world, *serial) || now - started < super::actors::ANIMSCRIPT_RETRY_MS)
+    {
+        return;
+    }
+    switch_animscript(world, id, object, wanted, now);
+}
+
+/// Ends the running animscript (`killanimscript`, `end_script`) and starts `wanted`.
+pub(crate) fn switch_animscript(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    wanted: Arc<str>,
+    now: i64,
+) {
+    let Some(current) = actor(world, id).map(|a| a.animscript.clone()) else {
+        return;
+    };
+    if let Some((name, serial)) = &current {
+        let receiver = Value::Object(object);
+        if thread_running(world, *serial) {
+            crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
+        }
+        if *name != wanted {
+            run_script(world, &format!("animscripts/{name}::end_script"), receiver);
+        }
+    }
+    if !world.resource::<Runtime>().live(&object) {
+        return;
+    }
+    with_actor(world, id, |a| {
+        if let Some((name, _)) = &current
+            && *name != wanted
+        {
+            a.prev_animscript = Some(name.clone());
+        }
+        a.anim_mode = "normal".into();
+        a.orient = Orient::Default;
+        a.animscript = Some((wanted.clone(), 0));
+        a.animscript_started_ms = now;
+    });
+    let serial = run_script(
+        world,
+        &format!("animscripts/{wanted}::main"),
+        Value::Object(object),
+    );
+    with_actor(world, id, |a| {
+        a.animscript = Some((wanted, serial.unwrap_or(0)))
+    });
+}
+
+/// A dying actor stops where it is.
+pub(crate) fn stop(world: &mut World, id: ActorId) {
+    clear_path(world, id);
+    release_all(world, id);
+}
+
+/// One actor's think: goal, path, movement, facing, animscript, `"goal"`.
+pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budget: &mut u32) {
+    let linked = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .is_some_and(|e| e.linked_to.is_some());
+    if linked {
+        clear_path(world, id);
+        select_animscript(world, id, object, now);
+        return;
+    }
+    let at = origin(world, object);
+    if let Some(goal_entity) = actor(world, id).and_then(|a| a.goal.entity) {
+        if world.resource::<Runtime>().live(&goal_entity) {
+            let pos = origin(world, goal_entity);
+            with_actor(world, id, |a| a.goal.pos = pos);
+        } else {
+            with_actor(world, id, |a| a.goal.entity = None);
+        }
+    }
+    let target = if holds_to_fight(world, id, at) {
+        None
+    } else {
+        wanted_target(world, id, at)
+    };
+    match target {
+        None => {
+            if actor(world, id).is_some_and(|a| a.path.is_some() || a.search.is_some()) {
+                clear_path(world, id);
+            }
+        }
+        Some((target, node)) => {
+            if let Some(node) = node {
+                claim(world, id, node);
+            }
+            let (current, searching, wait) = {
+                let a = actor(world, id).unwrap();
+                (
+                    a.path.as_ref().map(|p| p.final_goal),
+                    a.search.as_ref().map(|(_, t)| *t),
+                    a.path_wait_ms,
+                )
+            };
+            let stale = |end: Option<[f32; 3]>| end.is_none_or(|e| length(sub(e, target)) > 1.0);
+            let moving_goal = actor(world, id).is_some_and(|a| a.goal.entity.is_some());
+            let replan = if moving_goal {
+                current.is_some_and(|e| length(sub(e, target)) > 64.0)
+            } else {
+                stale(current)
+            };
+            if stale(current) && current.is_none() && stale(searching) && now >= wait {
+                begin_path(world, id, object, at, target, now);
+            } else if replan && current.is_some() && stale(searching) {
+                with_actor(world, id, |a| a.path = None);
+                if now >= wait {
+                    begin_path(world, id, object, at, target, now);
+                }
+            }
+            continue_search(world, id, object, now, budget);
+        }
+    }
+    let anim_mode = actor(world, id).map(|a| a.anim_mode.clone());
+    let moved = if anim_mode.is_some_and(|m| ANIM_DRIVEN.contains(&&*m)) {
+        at
+    } else {
+        follow_path(world, id, object, at)
+    };
+    if moved != at {
+        world
+            .resource_mut::<super::mechanics::Mechanics>()
+            .stop(object, "origin");
+        world
+            .resource_mut::<Runtime>()
+            .set_object_field(object, "origin", Value::Vector(moved));
+    }
+    face(world, id, object, moved);
+    select_animscript(world, id, object, now);
+    let at_goal = {
+        let final_goal = actor(world, id).and_then(|a| a.path.as_ref().map(|p| p.final_goal));
+        point_at_goal(world, id, moved)
+            && final_goal.is_none_or(|end| point_at_goal(world, id, end))
+    };
+    if at_goal {
+        raise(world, Value::Object(object), "goal", Vec::new());
+        let first = with_actor(world, id, |a| {
+            let first = !std::mem::replace(&mut a.goal_reached, true);
+            (first, a.goal.node, a.distance_moved)
+        });
+        if let Some((true, node, distance)) = first {
+            diag::info!(
+                Sim,
+                "actor: entity {object} notify \"goal\" at {:.0} {:.0} {:.0} node={node:?} moved={distance:.0}",
+                moved[0],
+                moved[1],
+                moved[2]
+            );
+        }
+    }
+}
+
+/// With a known enemy an actor stops pathing once inside its goal (a goal
+/// position, not a node), or within `pathenemyfightdist` of the enemy.
+fn holds_to_fight(world: &mut World, id: ActorId, at: [f32; 3]) -> bool {
+    let Some((enemy, fight_dist, node_goal)) = actor(world, id).and_then(|a| {
+        let enemy = a.enemy?;
+        let known = a.known.get(&enemy)?;
+        Some((
+            known.pos,
+            a.float_field("pathenemyfightdist"),
+            a.goal.node.is_some(),
+        ))
+    }) else {
+        return false;
+    };
+    length(sub(enemy, at)) <= fight_dist || !node_goal && point_at_goal(world, id, at)
+}
+
+/// `Actor_PointAtGoal` for `isingoal`.
+fn is_in_goal(world: &mut World, id: ActorId, point: [f32; 3]) -> bool {
+    point_at_goal(world, id, point)
+}
+
+fn goal_volume_nodes(world: &mut World, volume: u64) -> Vec<u16> {
+    let count = FrameWorld::from_world(world).path_graph().nodes.len();
+    (0..count as u16)
+        .filter(|&n| {
+            let at = FrameWorld::from_world(world).path_graph().nodes[n as usize].origin;
+            super::triggers::contains_point(world, volume, at)
+        })
+        .collect()
+}
+
+pub(crate) fn register(registry: &mut NativeRegistry) {
+    use Namespace::{Function, Method};
+
+    registry.register(Method, "setgoalpos", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let pos = vector(args, 0)?;
+        set_goal_pos(world, id, pos, None);
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "setgoalnode", |world, receiver, args| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        let node = node_index(world, arg(args, 0)?)?;
+        let (pos, linked) = {
+            let frame = FrameWorld::from_world(world);
+            let n = &frame.path_graph().nodes[node as usize];
+            (n.origin, !n.links.is_empty() || n.spawnflags & 1 != 0)
+        };
+        if !linked {
+            diag::warn!(
+                Sim,
+                "actor: entity {object} goal node at {:.0} {:.0} {:.0} has no path links",
+                pos[0],
+                pos[1],
+                pos[2]
+            );
+        }
+        set_goal_pos(world, id, pos, Some(node));
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "setgoalentity", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let target = entity_id(world, arg(args, 0)?)?;
+        let pos = origin(world, target);
+        with_actor(world, id, |a| {
+            a.goal.entity = Some(target);
+            a.goal_reached = false;
+            a.goal.node = None;
+            a.goal.volume = None;
+            a.goal.pos = pos;
+            a.path_wait_ms = 0;
+        });
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "setgoalvolume", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let volume = entity_id(world, arg(args, 0)?)?;
+        let goal = actor(world, id)
+            .map(|a| a.goal.clone())
+            .ok_or("receiver is not an actor")?;
+        if goal.entity.is_some() {
+            return Err("cannot set goal volume when a goal entity is set".into());
+        }
+        if !super::triggers::contains_point(world, volume, goal.pos) {
+            return Err("cannot set goal volume which does not contain goal position".into());
+        }
+        with_actor(world, id, |a| a.goal.volume = Some(volume));
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "setgoalvolumeauto", |world, receiver, args| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        let volume = entity_id(world, arg(args, 0)?)?;
+        let at = origin(world, object);
+        let graph_nodes = goal_volume_nodes(world, volume);
+        let best = {
+            let frame = FrameWorld::from_world(world);
+            let graph = frame.path_graph();
+            graph_nodes.into_iter().min_by(|a, b| {
+                let da = length(sub(graph.nodes[*a as usize].origin, at));
+                let db = length(sub(graph.nodes[*b as usize].origin, at));
+                da.total_cmp(&db).then(a.cmp(b))
+            })
+        };
+        let pos = match best {
+            Some(n) => FrameWorld::from_world(world).path_graph().nodes[n as usize].origin,
+            None => origin(world, volume),
+        };
+        set_goal_pos(world, id, pos, None);
+        with_actor(world, id, |a| a.goal.volume = Some(volume));
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "getgoalvolume", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let volume = actor(world, id).and_then(|a| a.goal.volume);
+        Ok(volume
+            .filter(|v| world.resource::<Runtime>().live(v))
+            .map_or(Value::Undefined, Value::Object))
+    });
+    registry.register(Method, "cleargoalvolume", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        with_actor(world, id, |a| a.goal.volume = None);
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "isingoal", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        if args.len() != 1 {
+            return Err("illegal call to isingoal()".into());
+        }
+        let point = vector(args, 0)?;
+        Ok(Value::Int(is_in_goal(world, id, point).into()))
+    });
+    registry.register(Method, "orientmode", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let mode = string(args, 0)?.to_ascii_lowercase();
+        let orient = match mode.as_str() {
+            "face default" => Orient::Default,
+            "face current" => Orient::Current,
+            "face motion" => Orient::Motion,
+            "face enemy" | "face enemy or motion" => Orient::Enemy,
+            "face goal" => Orient::Default,
+            "face angle" => Orient::Angle(float(args, 1)?),
+            "face direction" => Orient::Angle(yaw_of(vector(args, 1)?)),
+            "face point" => Orient::Point(vector(args, 1)?),
+            other => return Err(format!("unknown orient mode '{other}'")),
+        };
+        with_actor(world, id, |a| a.orient = orient);
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "animmode", |world, receiver, args| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let mode = string(args, 0)?.to_ascii_lowercase();
+        if !matches!(
+            mode.as_str(),
+            "normal"
+                | "none"
+                | "gravity"
+                | "nogravity"
+                | "zonly_physics"
+                | "nophysics"
+                | "noclip"
+                | "angle deltas"
+                | "point relative"
+        ) {
+            return Err(format!("unknown anim mode '{mode}'"));
+        }
+        with_actor(world, id, |a| a.anim_mode = mode.into());
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "teleport", |world, receiver, args| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        let pos = vector(args, 0)?;
+        teleport(world, id, object, pos, args.get(1));
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "forceteleport", |world, receiver, args| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        let pos = vector(args, 0)?;
+        teleport(world, id, object, pos, args.get(1));
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "getnegotiationstartnode", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let node = negotiation(world, id).map(|(start, _)| start);
+        Ok(node_value(world, node))
+    });
+    registry.register(Method, "getnegotiationendnode", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let node = negotiation(world, id).map(|(_, end)| end);
+        Ok(node_value(world, node))
+    });
+    registry.register(Method, "maymovetopoint", |world, receiver, args| {
+        let (_, object) = receiver_actor(world, receiver)?;
+        let to = vector(args, 0)?;
+        let from = origin(world, object);
+        let frame = super::presence::settled(world);
+        Ok(Value::Int(
+            hull_clear(&frame, add(from, [0.0, 0.0, 1.0]), add(to, [0.0, 0.0, 1.0])).into(),
+        ))
+    });
+    registry.register(
+        Method,
+        "maymovefrompointtopoint",
+        |world, receiver, args| {
+            receiver_actor(world, receiver)?;
+            let (from, to) = (vector(args, 0)?, vector(args, 1)?);
+            let frame = super::presence::settled(world);
+            Ok(Value::Int(
+                hull_clear(&frame, add(from, [0.0, 0.0, 1.0]), add(to, [0.0, 0.0, 1.0])).into(),
+            ))
+        },
+    );
+    registry.register(Method, "getdoorpathnode", |world, receiver, _| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        let at = origin(world, object);
+        let node = door_node(world, id, at);
+        Ok(node_value(world, node))
+    });
+    registry.register(Method, "shouldfacemotion", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let facing =
+            actor(world, id).is_some_and(|a| matches!(a.orient, Orient::Default | Orient::Motion));
+        Ok(Value::Int(facing.into()))
+    });
+    registry.register(Function, "isnodeoccupied", |world, _, args| {
+        let node = node_index(world, arg(args, 0)?)?;
+        Ok(Value::Int(
+            world
+                .resource::<ActorPool>()
+                .claims
+                .contains_key(&node)
+                .into(),
+        ))
+    });
+    registry.register(Method, "nearnode", |world, receiver, args| {
+        let (_, object) = receiver_actor(world, receiver)?;
+        let node = node_index(world, arg(args, 0)?)?;
+        let at = origin(world, object);
+        let pos = FrameWorld::from_world(world).path_graph().nodes[node as usize].origin;
+        Ok(Value::Int(
+            ((at[2] - pos[2]).powi(2) <= 6400.0 && length2(sub(at, pos)) <= NODE_ARRIVE_DIST)
+                .into(),
+        ))
+    });
+}
+
+/// The next door node (`Door`, `Door Interior`) on the path within reach.
+fn door_node(world: &mut World, id: ActorId, at: [f32; 3]) -> Option<u16> {
+    let points = {
+        let path = actor(world, id)?.path.as_ref()?;
+        path.points[path.next.min(path.points.len())..].to_vec()
+    };
+    let frame = FrameWorld::from_world(world);
+    let graph = frame.path_graph();
+    let mut from = at;
+    let mut ahead = 0.0;
+    for point in points {
+        ahead += length(sub(point.pos, from));
+        if ahead > DOOR_LOOKAHEAD {
+            return None;
+        }
+        from = point.pos;
+        if let Some(node) = point.node
+            && matches!(graph.nodes[node as usize].node_type, 13 | 14)
+        {
+            return Some(node);
+        }
+    }
+    None
+}
+
+/// The negotiation link ahead on the path: its begin and end nodes.
+fn negotiation(world: &World, id: ActorId) -> Option<(u16, u16)> {
+    let path = actor(world, id)?.path.as_ref()?;
+    let i = (path.next..path.points.len()).find(|&i| path.points[i].traverse)?;
+    Some((
+        path.points.get(i.checked_sub(1)?)?.node?,
+        path.points[i].node?,
+    ))
+}
+
+fn teleport(world: &mut World, id: ActorId, object: u64, pos: [f32; 3], angles: Option<&Value>) {
+    world
+        .resource_mut::<super::mechanics::Mechanics>()
+        .stop(object, "origin");
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.set_object_field(object, "origin", Value::Vector(pos));
+    if let Some(Value::Vector(angles)) = angles {
+        runtime.set_object_field(object, "angles", Value::Vector([0.0, angles[1], 0.0]));
+    }
+    with_actor(world, id, |a| {
+        a.path = None;
+        a.search = None;
+        a.nearest = None;
+        a.velocity = [0.0; 3];
+    });
+}

@@ -80,8 +80,12 @@ pub(crate) struct Runtime {
     pub(crate) pending_restart: Option<bool>,
     pub(crate) restored_pers: BTreeMap<u32, host::restart::Detached>,
     pub(crate) path_nodes: Vec<Option<u64>>,
-    /// SP level entries; they start once the first player has joined and spawned.
+    /// SP level entries; they start once the whole party has joined and spawned.
     pub(crate) player_entries: Vec<String>,
+    /// Players the SP entry waits for (Spec Ops co-op: the lobby size at match start).
+    pub(crate) party: usize,
+    /// When the first party member joined; a missing partner stops being waited for later.
+    pub(crate) party_since_ms: Option<i64>,
     pub(crate) sp: host::natives::sp::SpState,
 }
 

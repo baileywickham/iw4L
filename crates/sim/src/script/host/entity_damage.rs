@@ -9,7 +9,7 @@ use bevy_ecs::prelude::World;
 pub(crate) struct EntityHit {
     pub target: ScriptModelId,
     pub amount: i32,
-    pub attacker: Option<ClientId>,
+    pub attacker: Option<crate::Attacker>,
     pub means: &'static str,
     pub weapon: u32,
     pub point: [f32; 3],
@@ -58,7 +58,7 @@ pub(crate) struct ScriptBlast {
     pub radius: f32,
     pub max: f32,
     pub min: f32,
-    pub attacker: Option<ClientId>,
+    pub attacker: Option<crate::Attacker>,
     pub inflictor: Option<ScriptModelId>,
     pub means: &'static str,
     pub weapon: u32,
@@ -70,7 +70,7 @@ pub(crate) struct ScriptHit {
     pub target: HitTarget,
     pub amount: i32,
     pub origin: [f32; 3],
-    pub attacker: Option<ClientId>,
+    pub attacker: Option<crate::Attacker>,
     pub inflictor: Option<ScriptModelId>,
     pub means: &'static str,
     pub weapon: u32,
@@ -105,7 +105,7 @@ pub(crate) fn apply_script_blasts(world: &mut World, tick: crate::Tick) {
                         crate::AuthorityModelOwner::ScriptModel(target),
                         piece,
                         hit.amount,
-                        hit.attacker,
+                        hit.attacker.and_then(crate::Attacker::client),
                     );
                     continue;
                 }
@@ -240,12 +240,17 @@ pub(crate) fn damage_entity(world: &mut World, hit: &EntityHit) -> bool {
         })
         .unwrap_or_default();
     let weapon = crate::script_player::weapon_name(&frame, hit.weapon);
-    let attacker = hit.attacker.map_or(Value::Undefined, |a| {
-        super::players::player_object(world, a.0)
-    });
-    if world.resource::<Runtime>().entities[&object].kind == super::entities::EntityKind::Vehicle {
-        super::vehicles::damage(world, object, hit, attacker, &weapon, &tag);
-        return true;
+    let attacker = super::players::attacker_object(world, hit.attacker);
+    match world.resource::<Runtime>().entities[&object].kind {
+        super::entities::EntityKind::Vehicle => {
+            super::vehicles::damage(world, object, hit, attacker, &weapon, &tag);
+            return true;
+        }
+        super::entities::EntityKind::Actor(actor) => {
+            super::actor_combat::damage(world, actor, object, hit, attacker, &weapon, &tag);
+            return true;
+        }
+        _ => {}
     }
     let mut runtime = world.resource_mut::<Runtime>();
     let model = match runtime.object_field(object, "model") {

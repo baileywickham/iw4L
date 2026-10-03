@@ -86,20 +86,23 @@ fn adopt(
 
 pub(crate) fn launch(
     world: &mut World,
-    owner: ClientId,
+    owner: crate::Attacker,
     weapon: u32,
     start: [f32; 3],
     end: [f32; 3],
 ) -> Result<Value, String> {
     let tick = world.resource::<crate::step::StepRequest>().tick;
-    let projectile = crate::missile::magic_bullet(
+    let Some(projectile) = crate::missile::magic_bullet(
         &mut FrameWorld::from_world(world),
         tick,
         owner,
         weapon,
         start,
         end,
-    )?;
+    )?
+    else {
+        return Ok(Value::Undefined);
+    };
     let object = adopt(world, &projectile, "rocket")?;
     Ok(Value::Object(object))
 }
@@ -131,12 +134,17 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         let weapon = crate::script_player::weapon_named(&FrameWorld::from_world(world), &name)?;
         let (start, end) = (vector(args, 1)?, vector(args, 2)?);
         let owner = match args.get(3) {
-            Some(value) => world
-                .resource::<Runtime>()
-                .player_client_of(value)
-                .map(ClientId)
-                .ok_or("MagicBullet owner is not a player")?,
-            None => return Err("MagicBullet needs an owning player".into()),
+            Some(value) => {
+                let runtime = world.resource::<Runtime>();
+                match runtime.player_client_of(value) {
+                    Some(client) => crate::Attacker::Client(ClientId(client)),
+                    None => runtime
+                        .presence_of(value)
+                        .map(crate::Attacker::Entity)
+                        .ok_or("MagicBullet owner is neither a player nor an entity")?,
+                }
+            }
+            None => return Err("MagicBullet needs an owner".into()),
         };
         launch(world, owner, weapon, start, end)
     });

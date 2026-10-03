@@ -10,12 +10,12 @@ use crate::actor::fields::{self, TEAMS};
 use crate::actor::{Actor, ActorId, ActorPool, MAX_ACTORS};
 use crate::frame::FrameWorld;
 use crate::script::runtime::{raise, run_now_thread, thread_running};
-use crate::script::{Arc, BTreeMap, Namespace, NativeRegistry, Runtime, Value};
+use crate::script::{Arc, Namespace, NativeRegistry, Runtime, Value};
 use bevy_ecs::prelude::World;
 
 const ANIMTREE: &str = "generic_human";
 /// How long a finished animscript waits before the think starts it again.
-const ANIMSCRIPT_RETRY_MS: i64 = 500;
+pub(crate) const ANIMSCRIPT_RETRY_MS: i64 = 500;
 
 pub(crate) fn actor_of(world: &World, object: u64) -> Option<ActorId> {
     match world.resource::<Runtime>().entities.get(&object)?.kind {
@@ -63,7 +63,7 @@ fn vector_field(runtime: &mut Runtime, object: u64, name: &str) -> [f32; 3] {
     }
 }
 
-fn run_script(world: &mut World, name: &str, receiver: Value) -> Option<u64> {
+pub(crate) fn run_script(world: &mut World, name: &str, receiver: Value) -> Option<u64> {
     if !has_function(world, name) {
         return None;
     }
@@ -109,8 +109,10 @@ pub(crate) fn install_spawners(world: &mut World) {
             pending.push(*id);
         }
     }
-    let aitypes: std::collections::BTreeSet<String> =
-        placed.iter().map(|(_, classname)| aitype(classname)).collect();
+    let aitypes: std::collections::BTreeSet<String> = placed
+        .iter()
+        .map(|(_, classname)| aitype(classname))
+        .collect();
     world.resource_mut::<ActorPool>().pending = pending.clone();
     for name in &aitypes {
         run_script(world, &format!("{name}::precache"), Value::level());
@@ -201,20 +203,15 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
         runtime.set_object_field(object, "origin", Value::Vector(origin));
         runtime.set_object_field(object, "angles", Value::Vector([0.0, angles[1], 0.0]));
         runtime.set_object_field(object, "health", Value::Int(100));
-        runtime.entities.get_mut(&object).unwrap().presence = Some(presence);
+        let entity = runtime.entities.get_mut(&object).unwrap();
+        entity.presence = Some(presence);
+        entity.can_damage = true;
         object
     };
-    world.resource_mut::<ActorPool>().actors.insert(
-        actor,
-        Actor {
-            object,
-            team,
-            species: "human".into(),
-            fields: BTreeMap::new(),
-            animscript: None,
-            animscript_started_ms: 0,
-        },
-    );
+    world
+        .resource_mut::<ActorPool>()
+        .actors
+        .insert(actor, Actor::new(object, team, origin));
     match FrameWorld::from_world(world)
         .content()
         .script_anims()
@@ -229,21 +226,36 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
         Err(error) => diag::warn!(Sim, "actor: {error}"),
     }
     let receiver = Value::Object(object);
-    run_script(world, &format!("{}::main", aitype(&classname)), receiver.clone());
+    run_script(
+        world,
+        &format!("{}::main", aitype(&classname)),
+        receiver.clone(),
+    );
     {
         let mut runtime = world.resource_mut::<Runtime>();
         let health = runtime.object_field(object, "health");
         runtime.set_object_field(object, "maxhealth", health);
     }
     if let Some(serial) = run_script(world, "animscripts/init::main", receiver.clone()) {
-        diag::warn!(Sim, "actor: animscripts/init::main waited (thread {serial})");
+        diag::warn!(
+            Sim,
+            "actor: animscripts/init::main waited (thread {serial})"
+        );
     }
     if notify {
-        raise(world, Value::Object(spawner), "spawned", vec![receiver.clone()]);
+        raise(
+            world,
+            Value::Object(spawner),
+            "spawned",
+            vec![receiver.clone()],
+        );
     }
     let team = world.resource::<ActorPool>().actors[&actor].team.clone();
     let alive = live_actors(world).len();
-    let model = match world.resource_mut::<Runtime>().object_field(object, "model") {
+    let model = match world
+        .resource_mut::<Runtime>()
+        .object_field(object, "model")
+    {
         Value::String(model) => model.to_string(),
         _ => String::new(),
     };
@@ -263,12 +275,33 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
 
 pub(crate) fn load_field(world: &mut World, actor: ActorId, name: &str) -> Option<Value> {
     let def = fields::actor_field(name)?;
+    if let Some(value) = super::actor_combat::load_field(world, actor, def.name) {
+        return Some(value);
+    }
     let pool = world.resource::<ActorPool>();
     let state = pool.actors.get(&actor)?;
     let value = match def.name {
         "team" => Value::string(&state.team),
         "type" => Value::string(&state.species),
         "script" => Value::string(state.animscript.as_ref().map_or("init", |(name, _)| name)),
+        "prevscript" => Value::string(state.prev_animscript.as_deref().unwrap_or("init")),
+        "goalpos" => Value::Vector(state.goal.pos),
+        "pathgoalpos" => state
+            .path
+            .as_ref()
+            .map_or(Value::Undefined, |path| Value::Vector(path.final_goal)),
+        "lookaheaddir" => Value::Vector(state.lookahead_dir),
+        "lookaheaddist" => Value::Float(state.lookahead_dist),
+        "velocity" => Value::Vector(state.velocity),
+        "movemode" => Value::string(state.move_mode.name()),
+        "node" | "prevnode" => {
+            let node = if def.name == "node" {
+                state.claimed
+            } else {
+                state.prev_claimed
+            };
+            return Some(super::actor_nav::node_value(world, node));
+        }
         "lookforward" | "lookright" | "lookup" => {
             let object = state.object;
             let angles = vector_field(&mut world.resource_mut::<Runtime>(), object, "angles");
@@ -327,7 +360,7 @@ fn live_actors(world: &World) -> Vec<(i32, ActorId, u64)> {
         .resource::<ActorPool>()
         .actors
         .iter()
-        .filter(|(_, a)| runtime.live(&a.object))
+        .filter(|(_, a)| a.dying.is_none() && runtime.live(&a.object))
         .filter_map(|(id, a)| Some((runtime.entities.get(&a.object)?.number, *id, a.object)))
         .collect();
     actors.sort_unstable();
@@ -399,9 +432,7 @@ fn set_actor_fields(world: &mut World, actor: ActorId, values: &[(&'static str, 
 /// animscript running on every actor (`animscripts/stop` until goals and combat exist).
 pub(crate) fn run_actors(world: &mut World) {
     let request = world.resource::<crate::step::StepRequest>();
-    if !request.reason.advances_authority_world()
-        || world.resource::<Runtime>().program.is_none()
-    {
+    if !request.reason.advances_authority_world() || world.resource::<Runtime>().program.is_none() {
         return;
     }
     let pending = std::mem::take(&mut world.resource_mut::<ActorPool>().pending);
@@ -424,6 +455,7 @@ pub(crate) fn run_actors(world: &mut World) {
             .collect()
     };
     for id in gone {
+        super::actor_nav::release_all(world, id);
         world.resource_mut::<ActorPool>().actors.remove(&id);
     }
     let now = now_ms(world);
@@ -457,31 +489,51 @@ pub(crate) fn run_actors(world: &mut World) {
             "actor: getaiarray(\"axis\").size={axis} ai={} animscripts_running={running} presented={presented}",
             live.len()
         );
+        for (number, id, object) in &live {
+            let origin = vector_field(&mut world.resource_mut::<Runtime>(), *object, "origin");
+            let health = match world
+                .resource_mut::<Runtime>()
+                .object_field(*object, "health")
+            {
+                Value::Int(h) => h,
+                _ => 0,
+            };
+            let pool = world.resource::<ActorPool>();
+            let a = &pool.actors[id];
+            let goal = a.goal.pos;
+            let to_goal = ((goal[0] - origin[0]).powi(2) + (goal[1] - origin[1]).powi(2)).sqrt();
+            diag::info!(
+                Sim,
+                "actor: entity {number} {} script={} movemode={} at {:.0} {:.0} {:.0} goal {:.0} {:.0} {:.0} node={:?} dist={to_goal:.0} radius={:.0} moved={:.0} path={}/{} enemy={:?} shots={} hits_taken={} health={}",
+                a.team,
+                a.animscript.as_ref().map_or("none", |(name, _)| name),
+                a.move_mode.name(),
+                origin[0],
+                origin[1],
+                origin[2],
+                goal[0],
+                goal[1],
+                goal[2],
+                a.goal.node,
+                a.float_field("goalradius"),
+                a.distance_moved,
+                a.path
+                    .as_ref()
+                    .map_or(0, |p| p.points.len() - p.next.min(p.points.len())),
+                a.path.as_ref().map_or(0, |p| p.nodes),
+                a.enemy,
+                a.shots,
+                a.hits_taken,
+                health
+            );
+        }
     }
+    let mut budget = super::actor_nav::EXPANSION_BUDGET;
+    super::presence::settle_collision(world);
+    let live = live_actors(world);
+    super::actor_combat::run(world, &live, now);
     for (_, id, object) in live_actors(world) {
-        let Some((script, started)) = world
-            .resource::<ActorPool>()
-            .actors
-            .get(&id)
-            .map(|a| (a.animscript.clone(), a.animscript_started_ms))
-        else {
-            continue;
-        };
-        if let Some((_, serial)) = &script
-            && (thread_running(world, *serial) || now - started < ANIMSCRIPT_RETRY_MS)
-        {
-            continue;
-        }
-        let name: Arc<str> = "stop".into();
-        let serial = run_script(
-            world,
-            &format!("animscripts/{name}::main"),
-            Value::Object(object),
-        );
-        if let Some(actor) = world.resource_mut::<ActorPool>().actors.get_mut(&id) {
-            actor.animscript = Some((name, serial.unwrap_or(0)));
-            actor.animscript_started_ms = now;
-        }
+        super::actor_nav::think(world, id, object, now, &mut budget);
     }
 }
 
@@ -523,9 +575,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     registry.register(Function, "getaicount", |world, _, _| {
         Ok(Value::Int(live_actors(world).len() as i32))
     });
-    registry.register(Function, "getcorpsearray", |world, _, _| {
-        new_array(world, Vec::new())
-    });
     registry.register(Function, "getspawnerarray", |world, _, _| {
         let ids = spawners(world, None);
         objects(world, ids)
@@ -545,7 +594,10 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     });
     registry.register(Function, "issentient", |world, _, args| {
         let value = arg(args, 0)?;
-        let sentient = world.resource::<Runtime>().player_client_of(value).is_some()
+        let sentient = world
+            .resource::<Runtime>()
+            .player_client_of(value)
+            .is_some()
             || matches!(kind_of(world, value), Some(EntityKind::Actor(_)));
         Ok(Value::Int(sentient.into()))
     });

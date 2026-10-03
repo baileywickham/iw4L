@@ -1370,6 +1370,7 @@ pub(crate) fn walk_script_zone(
             fpv_meshes,
             world_weapons,
             xanims,
+            bodies,
             ..
         } = *capture;
         weapons.resolve_reticles(&sink.materials);
@@ -1388,6 +1389,7 @@ pub(crate) fn walk_script_zone(
             fpv_meshes,
             xanims,
             materials: Some(std::mem::take(&mut sink.materials)),
+            bodies,
         };
     }
     walk
