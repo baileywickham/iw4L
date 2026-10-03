@@ -112,8 +112,13 @@ pub(crate) fn eog_summary(world: &mut World, menu: &str) {
         "1" => "success",
         _ => "failed",
     };
-    let fields = ["finished_time", "star_count", "targets_hit", "friendlies_hit"]
-        .map(|name| format!("{name}={}", level_field(world, name)));
+    let fields = [
+        "finished_time",
+        "star_count",
+        "targets_hit",
+        "friendlies_hit",
+    ]
+    .map(|name| format!("{name}={}", level_field(world, name)));
     diag::info!(
         Sim,
         "spec ops: mission {outcome} map={} time={} {} menu={menu}",
@@ -334,6 +339,8 @@ fn register_presentation(registry: &mut NativeRegistry) {
         "playersetstreamorigin",
         "laserforceon",
         "laserforceoff",
+        "laseraltviewon",
+        "laseraltviewoff",
         "enableaimassist",
         "disableaimassist",
         "dontinterpolate",

@@ -82,12 +82,13 @@ pub(crate) fn label(world: &World, object: u64) -> String {
 
 /// One sentient: a playing client, a live actor, or an entity made sentient.
 #[derive(Clone, Debug)]
-struct Sentient {
-    object: u64,
-    team: Arc<str>,
+pub(crate) struct Sentient {
+    pub(crate) object: u64,
+    pub(crate) team: Arc<str>,
 }
 
-fn sentients(world: &mut World) -> Vec<Sentient> {
+/// Live players, actors and script sentients, players first then entnum order.
+pub(crate) fn sentients(world: &mut World) -> Vec<Sentient> {
     let mut out = Vec::new();
     let players: Vec<(u32, u64)> = world
         .resource::<Runtime>()

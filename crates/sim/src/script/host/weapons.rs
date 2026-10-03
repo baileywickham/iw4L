@@ -293,6 +293,22 @@ fn notify_weapon_changes(world: &mut World) {
     }
 }
 
+/// A player's weapon fired a shot: `"weapon_fired"` on the player (SP AC-130 reloads,
+/// MP challenges wait on it).
+pub(crate) fn weapon_fired(world: &mut World, client: u32) {
+    if !world.contains_resource::<Runtime>() {
+        return;
+    }
+    let player = super::players::player_object(world, client);
+    if player != Value::Undefined {
+        world.resource_mut::<Runtime>().pending_notifies.push((
+            player,
+            "weapon_fired".into(),
+            Vec::new(),
+        ));
+    }
+}
+
 fn adopt_fired(world: &mut World) {
     let now = now_ms(world);
     let seen = std::mem::replace(&mut world.resource_mut::<Runtime>().missiles_seen_ms, now);

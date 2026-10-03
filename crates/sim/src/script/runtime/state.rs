@@ -63,6 +63,8 @@ pub(crate) struct Runtime {
     pub(crate) blasts: Vec<host::entity_damage::ScriptBlast>,
     pub(crate) hits: Vec<host::entity_damage::ScriptHit>,
     pub(crate) use_held: std::collections::BTreeSet<u32>,
+    /// Each player's origin at the last trigger pass (touches are swept).
+    pub(crate) touch_origins: BTreeMap<u32, [f32; 3]>,
     pub(crate) fired_once: std::collections::BTreeSet<u64>,
     pub(crate) require_look_at: std::collections::BTreeSet<u64>,
     pub(crate) server_info: std::collections::BTreeSet<String>,

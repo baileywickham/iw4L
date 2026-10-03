@@ -1004,6 +1004,14 @@ pub fn sample_client_input(
     let in_killcam = view.is_some_and(|v| v.in_killcam());
     if let Some(ps) = ps {
         for next in cycles {
+            if let (Some(inbox), Some(ids)) = (action_inbox.as_mut(), request_ids.as_mut()) {
+                let request_id = ids.allocate();
+                if let Err(error) =
+                    inbox.push(local.0, sim::ClientAction::CycleWeapon { request_id, next })
+                {
+                    diag::warn!(Net, "cycle_weapon: not queued — {error}");
+                }
+            }
             if next && gamemode_iw4::copycat_weapnext_bind_active(ps.pm_type, in_killcam) {
                 if let (Some(inbox), Some(ids)) = (action_inbox.as_mut(), request_ids.as_mut()) {
                     let request_id = ids.allocate();

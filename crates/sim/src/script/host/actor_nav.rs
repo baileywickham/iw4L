@@ -698,7 +698,11 @@ fn begin_custom(world: &mut World, receiver: &Value, function: u32) -> Result<()
         if thread_running(world, serial) {
             crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
         }
-        run_script(world, &format!("animscripts/{name}::end_script"), receiver.clone());
+        run_script(
+            world,
+            &format!("animscripts/{name}::end_script"),
+            receiver.clone(),
+        );
     }
     clear_path(world, id);
     let serial =
@@ -715,8 +719,11 @@ fn begin_custom(world: &mut World, receiver: &Value, function: u32) -> Result<()
 
 /// `stopanimscripted`: the actor's state picks its animscript again.
 pub(crate) fn end_scripted(world: &mut World, receiver: &Value) {
-    if let Ok((id, _)) = receiver_actor(world, receiver) {
+    if let Ok((id, object)) = receiver_actor(world, receiver) {
         with_actor(world, id, |a| a.scripted_until_ms = 0);
+        world
+            .resource_mut::<super::mechanics::Mechanics>()
+            .stop(object, "origin");
     }
 }
 

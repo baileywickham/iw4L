@@ -768,6 +768,9 @@ pub(crate) struct PlayerSlot {
     pub radar_blocked: bool,
     pub link: Option<PlayerLink>,
     pub sp_shields: super::natives::sp_player::SpShields,
+    /// The buttons of the last command, before control constraints (a vehicle turret's
+    /// user fires it with weapons disabled).
+    pub held_buttons: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -814,6 +817,7 @@ impl PlayerSlot {
             radar_blocked: false,
             link: None,
             sp_shields: Default::default(),
+            held_buttons: 0,
         }
     }
 }
@@ -1058,7 +1062,7 @@ pub(crate) fn sync_players(world: &mut World) {
 }
 
 /// How long the SP entry waits for the rest of the party after the first player joins.
-const PARTY_WAIT_MS: i64 = 90_000;
+const PARTY_WAIT_MS: i64 = 240_000;
 
 /// The SP entry runs once every lobby member has joined (`_load` snapshots `level.players`),
 /// or once the wait for a missing partner runs out. Two players make it a co-op game.
@@ -1078,6 +1082,19 @@ fn party_ready(world: &mut World, joined: usize, now: i64) -> bool {
     drop(runtime);
     let coop = joined > 1;
     super::natives::iw4::set_dvar(world, "coop", if coop { "1" } else { "0" });
+    // The co-op role menu's answer (`so_char_host` / `so_char_client`): which player takes
+    // the gunner seat in the AC-130 and chopper missions. The host may set it as a rule;
+    // by default the joining player is the gunner.
+    let role = world
+        .resource::<Runtime>()
+        .dvars
+        .get("coop_start")
+        .filter(|role| !role.is_empty())
+        .cloned();
+    let role = role.unwrap_or_else(|| "so_char_client".into());
+    if coop {
+        super::natives::iw4::set_dvar(world, "coop_start", &role);
+    }
     diag::info!(
         Sim,
         "spec ops: level entry starts with {joined} player(s) (party {party}, coop={})",

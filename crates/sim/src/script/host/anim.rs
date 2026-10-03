@@ -514,8 +514,9 @@ fn wrap_degrees(angle: f32) -> f32 {
 /// `startscriptedanim( notify, origin, angles, anim, mode, root )`: place the
 /// entity at the anim's start relative to origin/angles and play it flagged
 /// under root (the tree root when absent), so notetracks and "end" reach
-/// `notify`. No root motion is applied. Without an animtree on the entity only
-/// "end" is sent, after the anim's length.
+/// `notify`. An actor follows the anim's root motion (rappels, traversals);
+/// other entities stay put. Without an animtree on the entity only "end" is
+/// sent, after the anim's length.
 fn start_scripted_anim(
     world: &mut World,
     receiver: &Value,
@@ -572,6 +573,23 @@ fn start_scripted_anim(
             Some(flag.clone()),
         )
     });
+    if super::actors::actor_of(world, id).is_some() {
+        let now = super::players::now_ms(world);
+        world.resource_mut::<Mechanics>().start(
+            id,
+            super::mechanics::Motion {
+                field: "origin",
+                path: super::mechanics::MotionPath::Anim {
+                    origin,
+                    angles,
+                    clip: super::mechanics::AnimRoot(clip.clone()),
+                },
+                start_ms: now,
+                duration_ms: (clip.duration() * 1000.0) as i64,
+                done: "scripted_root_done",
+            },
+        );
+    }
     if played.is_err() {
         let due = super::players::now_ms(world) + (clip.duration() * 1000.0) as i64;
         world

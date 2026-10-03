@@ -366,7 +366,12 @@ pub fn dm_spawn_points(s: &ZoneStream<'_>) -> Vec<SpawnPoint> {
     spawns
 }
 
-const SO_SPAWN_CLASSNAMES: &[&str] = &["info_player_start_so", "info_player_start_soPlayer2"];
+/// `_pmc` missions (`so_takeover_*`) start the squad at `info_player_start_pmc`.
+const SO_SPAWN_CLASSNAMES: &[&str] = &[
+    "info_player_start_so",
+    "info_player_start_soPlayer2",
+    "info_player_start_pmc",
+];
 
 pub fn so_spawn_points(addon_entities: &str) -> Vec<SpawnPoint> {
     parse_spawn_points(addon_entities, SO_SPAWN_CLASSNAMES)

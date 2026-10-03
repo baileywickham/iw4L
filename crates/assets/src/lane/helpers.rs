@@ -82,6 +82,8 @@ impl MapXModelCatalog {
             Some(materials),
             &self.shared_surfaces,
         )
+        // Rigs without surfaces (SP `c130_zoomrig`) still carry the tags scripts link to.
+        .or_else(|| asset_model::capture_xmodel_bones(stream, strings, geometry))
         .map(|skel| MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel)))
         .unwrap_or(MapXModelSceneAsset::Unavailable {
             reason: "IW4 XModel scene skeleton capture failed",

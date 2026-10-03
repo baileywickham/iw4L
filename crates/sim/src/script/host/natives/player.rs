@@ -867,12 +867,28 @@ pub(crate) fn link_to(
     let clamp = (view != LinkView::Absolute && args.len() > 3)
         .then(|| -> Result<[f32; 4], String> { Ok([-arc(5)?, arc(6)?, -arc(3)?, arc(4)?]) })
         .transpose()?;
+    if let Some(tag) = tag.as_deref() {
+        let why = super::super::presence::tag_miss(world, parent);
+        match super::super::presence::tag_world(world, parent, tag) {
+            Some((at, _)) => diag::info!(
+                Sim,
+                "link: client {client} to entity {parent} tag '{tag}' at {at:?} ({why})"
+            ),
+            None => diag::warn!(
+                Sim,
+                "link: entity {parent} has no tag '{tag}' ({why}); linking to its origin"
+            ),
+        }
+    }
     let (base, axis) = super::super::players::link_parent_pose(world, parent, tag.as_deref());
     let origin = FrameWorld::from_world(world)
         .player(ClientId(client))
         .map_or(base, |ps| ps.origin);
     let delta: [f32; 3] = std::array::from_fn(|i| origin[i] - base[i]);
-    let local = if view == LinkView::WeaponDelta {
+    // With a tag (`tag_origin` included) the player is placed on it, as the engine does;
+    // only an untagged link keeps the player's offset from the parent.
+    let tagged = matches!(args.get(1), Some(Value::String(_)));
+    let local = if view == LinkView::WeaponDelta || tagged {
         [0.0; 3]
     } else {
         std::array::from_fn(|i| (0..3).map(|j| delta[j] * axis[i][j]).sum())

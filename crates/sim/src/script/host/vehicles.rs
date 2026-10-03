@@ -12,6 +12,9 @@ const MPH: f32 = 17.6;
 const TICK_S: f32 = crate::MATCH_TICK_MS as f32 / 1000.0;
 const ARRIVED: f32 = 4.0;
 const GUNNER_RANGE: f32 = 8192.0;
+/// A turret seat's view arcs about `tag_player` (pitch down/up, yaw right/left): out of
+/// the door, not into the cabin.
+const SEAT_ARCS: [f32; 4] = [-20.0, 75.0, -85.0, 85.0];
 /// SP vehicles take no HUD/compass slot (`VEHICLE_SLOTS` is the MP pool).
 const SP_SLOT: u8 = u8::MAX;
 /// Path speed of an SP ground vehicle whose script and nodes set none.
@@ -61,6 +64,9 @@ pub(crate) struct Heli {
     /// SP `setvehicleteam`.
     pub(crate) team: Option<String>,
     fired: bool,
+    /// Driven by `vehicledriveto` (an SP ground vehicle): it keeps to the
+    /// ground and pitches with it.
+    ground: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -135,6 +141,7 @@ impl Default for Heli {
             drive: None,
             team: None,
             fired: false,
+            ground: false,
         }
     }
 }
@@ -189,14 +196,99 @@ fn aim_point(world: &mut World, aim: TurretAim) -> Option<[f32; 3]> {
     }
 }
 
-fn gunner_input(world: &mut World, client: u32) -> Option<([f32; 3], bool)> {
+/// The gunner's eye, view direction and attack button.
+fn gunner_input(world: &mut World, client: u32) -> Option<([f32; 3], [f32; 3], bool)> {
     let mut frame = crate::frame::FrameWorld::from_world(world);
-    let angles = frame.player(crate::ClientId(client))?.viewangles;
-    let held = crate::script_player::buttons(&mut frame, crate::ClientId(client));
+    let ps = frame.player(crate::ClientId(client))?;
+    let (angles, origin, height) = (ps.viewangles, ps.origin, ps.view_height_current);
+    let held = world
+        .resource::<Runtime>()
+        .players
+        .get(&client)?
+        .held_buttons;
     Some((
+        [origin[0], origin[1], origin[2] + height],
         math_iw4::angle_vectors(angles).0,
         held & playerstate_iw4::buttons::ATTACK != 0,
     ))
+}
+
+/// SP `vehicle useBy( player )`: the player takes the vehicle's turret seat
+/// (linked at `tag_player`, the view aims the turret, attack raises
+/// `turret_fire`); a second call by the same player leaves it.
+fn use_by(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, String> {
+    let Value::Object(id) = *receiver else {
+        return Err("receiver is not a vehicle".into());
+    };
+    let client = world
+        .resource::<Runtime>()
+        .player_client_of(arg(args, 0)?)
+        .ok_or("parameter 1: not a player")?;
+    let leaving = heli(world, receiver)?.gunner == Some(client);
+    {
+        let heli = heli(world, receiver)?;
+        heli.gunner = (!leaving).then_some(client);
+        heli.owner = (!leaving).then_some(client);
+        heli.turret = None;
+        heli.on_target = false;
+    }
+    let weapons = if leaving {
+        "enableweapons"
+    } else {
+        "disableweapons"
+    };
+    let native = world.resource::<NativeRegistry>().get(Method, weapons);
+    if let Some(native) = native {
+        native(world, &arg(args, 0)?.clone(), &[])?;
+    }
+    if leaving {
+        super::players::unlink_player(world, client);
+        diag::info!(
+            Sim,
+            "vehicle: client {client} leaves the turret of vehicle {id}"
+        );
+        return Ok(Value::Undefined);
+    }
+    let tag: Option<std::sync::Arc<str>> = Some("tag_player".into());
+    let (_, axis) = super::players::link_parent_pose(world, id, tag.as_deref());
+    super::players::link_player(
+        world,
+        client,
+        super::players::PlayerLink {
+            parent: id,
+            tag,
+            origin: [0.0; 3],
+            angles: [0.0; 3],
+            view: super::players::LinkView::Delta,
+            clamp: Some(SEAT_ARCS),
+            parent_angles: math_iw4::axis_to_angles(axis),
+            restore_view: None,
+        },
+    );
+    super::players::apply_player_links(world);
+    let weapon = heli(world, receiver)?.weapon.map(|weapon| {
+        crate::frame::FrameWorld::from_world(world)
+            .weapon_script_name(weapon)
+            .to_owned()
+    });
+    let tag_angles = |world: &mut World, tag: &str| {
+        super::presence::tag_world(world, id, tag).map(|(at, axis)| {
+            (
+                at.map(|v| v as i32),
+                math_iw4::axis_to_angles(axis).map(|v| v as i32),
+            )
+        })
+    };
+    let seat = tag_angles(world, "tag_player");
+    let turret = tag_angles(world, "tag_turret");
+    let flash = tag_angles(world, "tag_flash");
+    let angles = vec_field(&mut world.resource_mut::<Runtime>(), id, "angles");
+    diag::info!(
+        Sim,
+        "vehicle: client {client} uses the turret of vehicle {id} (weapon {}) angles={angles:?} tag_player={seat:?} tag_turret={turret:?} tag_flash={flash:?}",
+        weapon.as_deref().unwrap_or("none")
+    );
+    Ok(Value::Undefined)
 }
 
 fn fire_weapon(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, String> {
@@ -622,6 +714,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         let goal = vector(args, 0)?;
         let speed = float(args, 1)?.max(0.0) * MPH;
         let vehicle = heli(world, receiver)?;
+        vehicle.ground = true;
         vehicle.max_speed = speed;
         vehicle.accel = vehicle.accel.max(speed);
         vehicle.decel = vehicle.decel.max(speed);
@@ -707,6 +800,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         let definition = string(args, 2)?;
         let origin = vector(args, 3)?;
         let angles = vector(args, 4)?;
+        let sp = super::players::single_player(world);
         let frame = crate::frame::FrameWorld::from_world(world);
         let weapon = frame.vehicle_turret_weapon(&definition);
         let compass = frame.vehicle_compass(&definition).cloned();
@@ -717,8 +811,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             angles,
             &model,
             Some(Heli {
+                slot: if sp { SP_SLOT } else { 0 },
                 weapon,
-                compass,
+                compass: compass.filter(|_| !sp),
                 ..Default::default()
             }),
         )?;
@@ -947,6 +1042,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         aim_turret(world, receiver, None)
     });
     registry.register(Method, "fireweapon", fire_weapon);
+    registry.register(Method, "useby", use_by);
     // Vehicle turrets here traverse freely, so only the optional sight trace
     // from the muzzle can refuse a point.
     registry.register(
@@ -1094,6 +1190,12 @@ pub(crate) fn damage(
     }
     let now = super::players::now_ms(world);
     let _ = run_now(world, DAMAGE, Value::Object(object), args, now);
+}
+
+/// `IW4L_HELI_LOG=1`: once a second, each flying vehicle's position, goal, speed and gunner.
+fn heli_log() -> bool {
+    static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOG.get_or_init(|| std::env::var("IW4L_HELI_LOG").is_ok_and(|v| v == "1"))
 }
 
 fn approach_angle(from: f32, to: f32, step: f32) -> f32 {
@@ -1246,9 +1348,10 @@ pub(crate) fn advance(world: &mut World) {
             .clamp(-heli.max_roll, heli.max_roll)
             .clamp(-35.0, 35.0);
         match control {
-            Some((view, attack)) => {
+            Some((eye, view, attack)) => {
+                // Aim from the gunner's eye, carried with the vehicle this tick.
                 heli.turret = Some(TurretAim::Point(std::array::from_fn(|i| {
-                    next[i] + view[i] * GUNNER_RANGE
+                    eye[i] + next[i] - origin[i] + view[i] * GUNNER_RANGE
                 })));
                 heli.on_target = true;
                 if attack && now >= heli.next_fire_ms {
@@ -1265,6 +1368,20 @@ pub(crate) fn advance(world: &mut World) {
         if heli.turret.is_some() && !heli.on_target {
             heli.on_target = true;
             notes.push("turret_on_target");
+        }
+        if heli_log() && now % 1000 < crate::MATCH_TICK_MS as i32 {
+            diag::info!(
+                Sim,
+                "heli {id}: at {:.0} {:.0} {:.0} goal={:?} speed={:.0}/{:.0} gunner={:?} control={} notes={notes:?}",
+                next[0],
+                next[1],
+                next[2],
+                heli.goal.map(|g| g.map(|v| v as i32)),
+                heli.speed,
+                heli.max_speed,
+                heli.gunner,
+                control.is_some()
+            );
         }
         heli.velocity = std::array::from_fn(|i| (next[i] - origin[i]) / TICK_S);
         let reached_node = (heli.path_running && heli.arrived)
@@ -1301,13 +1418,79 @@ pub(crate) fn advance(world: &mut World) {
                 vec![Value::Object(id)],
             ));
         }
+        if std::env::var("IW4L_VEH_AUTODRIVE").is_ok_and(|v| v == "2")
+            && now % 2000 == 0
+            && runtime.vehicles[&id].slot == SP_SLOT
+        {
+            let goal = runtime.vehicles[&id].goal.unwrap_or([0.0; 3]);
+            diag::info!(
+                Sim,
+                "vehicle: {id} at ({:.0} {:.0} {:.0}) goal ({:.0} {:.0} {:.0}) {:.0} mph",
+                next[0],
+                next[1],
+                next[2],
+                goal[0],
+                goal[1],
+                goal[2],
+                speed / MPH
+            );
+        }
+        let ground = runtime.vehicles[&id].ground && runtime.vehicles[&id].hover.is_none();
         runtime.set_object_field(id, "origin", Value::Vector(next));
         runtime.set_object_field(id, "angles", Value::Vector([pitch, yaw, roll]));
         runtime.set_object_field(id, "veh_speed", Value::Float(speed / MPH));
         drop(runtime);
+        if ground {
+            follow_ground(world, id, origin, next, yaw, roll);
+        }
         for note in notes {
             raise(world, Value::Object(id), note, Vec::new());
         }
+    }
+}
+
+/// Rise a ground vehicle can climb, and drop it can fall, in one tick.
+const GROUND_STEP: f32 = 48.0;
+const GROUND_FALL: f32 = 256.0;
+const GROUND_MASK: u32 = 0x0080_0211;
+
+/// A `vehicledriveto` vehicle rides the terrain between its goals: the goal
+/// line only steers it; height and pitch come from the ground under it.
+fn follow_ground(
+    world: &mut World,
+    id: u64,
+    origin: [f32; 3],
+    next: [f32; 3],
+    yaw: f32,
+    roll: f32,
+) {
+    let start = [next[0], next[1], next[2].max(origin[2]) + GROUND_STEP];
+    let end = [next[0], next[1], next[2].min(origin[2]) - GROUND_FALL];
+    let hit = super::natives::engine::trace(
+        world,
+        start,
+        end,
+        [-16.0, -16.0, 0.0],
+        [16.0, 16.0, 16.0],
+        GROUND_MASK,
+    );
+    if hit.startsolid != 0 || hit.fraction >= 1.0 || hit.normal[2] < 0.45 {
+        return;
+    }
+    let forward = math_iw4::angle_vectors([0.0, yaw, 0.0]).0;
+    let n = hit.normal;
+    let dot = forward[0] * n[0] + forward[1] * n[1] + forward[2] * n[2];
+    let along = [
+        forward[0] - n[0] * dot,
+        forward[1] - n[1] * dot,
+        forward[2] - n[2] * dot,
+    ];
+    let pitch = math_iw4::vect_to_angles(along)[0];
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.set_object_field(id, "origin", Value::Vector(hit.endpos));
+    runtime.set_object_field(id, "angles", Value::Vector([pitch, yaw, roll]));
+    if let Some(vehicle) = runtime.vehicles.get_mut(&id) {
+        vehicle.velocity = std::array::from_fn(|i| (hit.endpos[i] - origin[i]) / TICK_S);
     }
 }
 

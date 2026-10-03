@@ -3,6 +3,7 @@ use crate::frame::FrameWorld;
 use crate::script::runtime::raise;
 use crate::script::{Runtime, Value};
 use bevy_ecs::prelude::World;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct TriggerPolicy {
@@ -831,6 +832,39 @@ impl Volume<'_> {
     }
 }
 
+/// Step between the swept touch samples.
+const SWEEP_STEP: f32 = 16.0;
+/// Longer moves are teleports, not motion through the triggers between.
+const SWEEP_MAX: f32 = 512.0;
+
+/// Touch at the current box and at boxes back along `back` (offset to the
+/// last pass's position).
+fn swept_touch(
+    volume: &Volume<'_>,
+    mins: [f32; 3],
+    maxs: [f32; 3],
+    back: Option<[f32; 3]>,
+) -> bool {
+    if volume.touches(mins, maxs) {
+        return true;
+    }
+    let Some(back) = back else {
+        return false;
+    };
+    let len = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+    if !(SWEEP_STEP..=SWEEP_MAX).contains(&len) {
+        return false;
+    }
+    let steps = (len / SWEEP_STEP).ceil() as usize;
+    (1..=steps).any(|step| {
+        let t = step as f32 / steps as f32;
+        volume.touches(
+            std::array::from_fn(|i| mins[i] + back[i] * t),
+            std::array::from_fn(|i| maxs[i] + back[i] * t),
+        )
+    })
+}
+
 const LOOK_AT_REACH: f32 = 128.0;
 
 fn looks_into(frame: &FrameWorld, client: u32, volume: &Volume<'_>) -> bool {
@@ -909,8 +943,19 @@ pub(crate) fn contains_point(world: &mut World, volume_entity: u64, point: [f32;
     inside.unwrap_or(false)
 }
 
+/// A trigger's world bounds (none for brush volumes).
+pub(crate) fn world_bounds(world: &mut World, trigger: u64) -> Option<([f32; 3], [f32; 3])> {
+    let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());
+    let bounds = {
+        let frame = FrameWorld::from_world(world);
+        volume(&mut runtime, &frame, trigger).and_then(|v| v.bounds())
+    };
+    *world.resource_mut::<Runtime>() = runtime;
+    bounds
+}
+
 impl Volume<'_> {
-    /// World bounds, for the trigger log.
+    /// World bounds, for the trigger log and the test autopilot.
     fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
         match *self {
             Volume::Cylinder {
@@ -1030,6 +1075,20 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                 raised.push((*usable, *player));
             }
         }
+        // Fast movers (a driven snowmobile covers ~60 u a tick) would step over
+        // thin gate triggers: test the path since the last pass too.
+        let mut moved: BTreeMap<u32, [f32; 3]> = BTreeMap::new();
+        let mut origins = BTreeMap::new();
+        for (client, _, _) in &players {
+            let Some(ps) = frame.player(crate::ClientId(*client)) else {
+                continue;
+            };
+            if let Some(last) = runtime.touch_origins.get(client) {
+                moved.insert(*client, std::array::from_fn(|i| last[i] - ps.origin[i]));
+            }
+            origins.insert(*client, ps.origin);
+        }
+        runtime.touch_origins = origins;
         let triggers: Vec<(u64, Fires)> = runtime
             .entities
             .iter()
@@ -1053,7 +1112,12 @@ pub(crate) fn dispatch_triggers(world: &mut World) {
                     continue;
                 }
                 let (mins, maxs) = toucher(&mut runtime, &frame, player);
-                if !volume.touches(mins, maxs) || look_at && !looks_into(&frame, client, &volume) {
+                let touched = if kind == Fires::Use {
+                    volume.touches(mins, maxs)
+                } else {
+                    swept_touch(&volume, mins, maxs, moved.get(&client).copied())
+                };
+                if !touched || look_at && !looks_into(&frame, client, &volume) {
                     continue;
                 }
                 raised.push((trigger, player));

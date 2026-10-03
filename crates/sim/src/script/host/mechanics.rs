@@ -598,6 +598,22 @@ pub(crate) enum MotionPath {
         from: [f32; 3],
         velocity: [f32; 3],
     },
+    /// An actor's `animscripted` root motion: the clip's delta from its
+    /// start, placed at `origin`/`angles` (the anim's reference frame).
+    Anim {
+        origin: [f32; 3],
+        angles: [f32; 3],
+        clip: AnimRoot,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AnimRoot(pub(crate) crate::script::Arc<xmodel_runtime::AnimClip>);
+
+impl PartialEq for AnimRoot {
+    fn eq(&self, other: &Self) -> bool {
+        crate::script::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 const GRAVITY: f32 = 800.0;
@@ -641,6 +657,25 @@ impl Motion {
                 (
                     std::array::from_fn(|i| from[i] + (to[i] - from[i]) * fraction),
                     std::array::from_fn(|i| (to[i] - from[i]) * rate),
+                )
+            }
+            MotionPath::Anim {
+                origin,
+                angles,
+                ref clip,
+            } => {
+                let fraction = if self.duration_ms > 0 {
+                    elapsed as f32 / self.duration_ms as f32
+                } else {
+                    1.0
+                };
+                let trans = clip.0.abs_delta_trans(fraction);
+                let (forward, right, up) = math_iw4::angle_vectors(angles);
+                (
+                    std::array::from_fn(|i| {
+                        origin[i] + forward[i] * trans[0] - right[i] * trans[1] + up[i] * trans[2]
+                    }),
+                    [0.0; 3],
                 )
             }
             MotionPath::Ballistic { from, velocity } => {

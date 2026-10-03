@@ -293,6 +293,19 @@ pub(crate) fn load_field(world: &mut World, actor: ActorId, name: &str) -> Optio
         "lookaheaddir" => Value::Vector(state.lookahead_dir),
         "lookaheaddist" => Value::Float(state.lookahead_dist),
         "velocity" => Value::Vector(state.velocity),
+        // The move script never sees "stop" (it would pick no move anim set):
+        // a path picked this tick has not moved the actor yet, and a finished
+        // path ends the move script only at the next animscript selection.
+        "movemode"
+            if state.move_mode == crate::actor::MoveMode::Stop
+                && (state.path.is_some()
+                    || state
+                        .animscript
+                        .as_ref()
+                        .is_some_and(|(name, _)| &**name == "move")) =>
+        {
+            Value::string(if state.path.is_some() { "run" } else { "walk" })
+        }
         "movemode" => Value::string(state.move_mode.name()),
         "footstepdetectdist" | "footstepdetectdistwalk" | "footstepdetectdistsprint"
             if !state.fields.contains_key(def.name) =>

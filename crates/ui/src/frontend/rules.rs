@@ -20,7 +20,7 @@ pub fn selected_game(
 pub const MATCH_CONFIG: &str = "default_xboxlive.cfg";
 
 fn is_rule(name: &str) -> bool {
-    name.starts_with("scr_") || name == "g_hardcore" || name == "g_gameskill"
+    name.starts_with("scr_") || matches!(name, "g_hardcore" | "g_gameskill" | "coop_start")
 }
 
 pub fn seed_rules(dvars: &mut UiMenuDvars, config: &str) {

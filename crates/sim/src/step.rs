@@ -488,6 +488,7 @@ fn run_players_system(ecs: &mut World) {
 
             let shots = advance_weapon_command(&mut world, tick, *id, cmd, delta.min(200));
             for shot in shots {
+                crate::script::weapon_fired(world.ecs(), id.0);
                 crate::missile::fire_accepted_shot(&mut world, tick, &shot);
 
                 let hitbox_ids = [*id];
@@ -778,6 +779,7 @@ fn action_needs_player_row(action: &ClientAction) -> bool {
             | ClientAction::SetProfile { .. }
             | ClientAction::UseCopycat { .. }
             | ClientAction::ActionSlot { .. }
+            | ClientAction::CycleWeapon { .. }
             | ClientAction::ChooseDefaultClass { .. }
             | ClientAction::MenuResponse { .. }
     )
@@ -829,6 +831,12 @@ fn apply_actions(world: &mut FrameWorld, tick: Tick, actions: &[(ClientId, Clien
                 slot,
             } => {
                 crate::script::action_slot_command(world.ecs(), id.0, slot);
+            }
+            ClientAction::CycleWeapon {
+                request_id: _,
+                next,
+            } => {
+                crate::script::cycle_weapon_command(world.ecs(), id.0, next);
             }
             ClientAction::SelectClass {
                 request_id,
@@ -983,7 +991,13 @@ fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
     let spawns = &world.bootstrap_ref().spawns;
     let start = SPEC_OPS_STARTS
         .get(seat)
-        .and_then(|classname| spawns.iter().find(|p| p.classname == *classname));
+        .and_then(|classname| spawns.iter().find(|p| p.classname == *classname))
+        .or_else(|| {
+            spawns
+                .iter()
+                .filter(|p| p.classname == "info_player_start_pmc")
+                .nth(seat)
+        });
     let Some(point) = start.cloned().or_else(|| {
         crate::spawn::spawn_candidate_indices(spawns)
             .first()

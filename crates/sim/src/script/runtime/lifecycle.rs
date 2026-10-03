@@ -154,6 +154,7 @@ pub(crate) fn install_level(
     host::presence::initialize_map_models(world);
     host::actors::install_spawners(world);
     host::vehicles::install_placed(world);
+    host::turrets::install_placed(world);
     host::natives::player::install_weapon_items(world);
     world.resource_mut::<Runtime>().started = false;
     Ok(())

@@ -30,6 +30,18 @@ pub(crate) fn fire_accepted_shot(world: &mut FrameWorld, tick: crate::Tick, shot
             );
         }
         Some(FireWeaponKind::Missile) => {
+            if crate::script::host::players::single_player(world.ecs()) {
+                diag::info!(
+                    Sim,
+                    "shot: client {} fires {} from {:.0} {:.0} {:.0} t={}",
+                    owner.0,
+                    world.weapon_script_name(shot.weapon),
+                    shot.origin[0],
+                    shot.origin[1],
+                    shot.origin[2],
+                    crate::level_time_ms(tick)
+                );
+            }
             fire_missile(world, tick, shot);
         }
         Some(FireWeaponKind::ThrownGrenade) => {

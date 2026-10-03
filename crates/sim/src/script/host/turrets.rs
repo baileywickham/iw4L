@@ -47,6 +47,96 @@ pub(crate) struct Turret {
     mode_change_wait: f32,
 }
 
+impl Turret {
+    fn new(weapon: u32) -> Self {
+        Self {
+            weapon,
+            mode: "manual".into(),
+            owner: None,
+            team: None,
+            carried: false,
+            operable: true,
+            fire_enabled: true,
+            manual: None,
+            target: None,
+            firing: false,
+            on_target: false,
+            aim: [1.0, 0.0, 0.0],
+            arcs: [180.0, 180.0, 90.0, 90.0],
+            drop_pitch: 0.0,
+            convergence: [0.0; 2],
+            minimap: false,
+            solid: false,
+            minigun: false,
+            mode_change_wait: 0.0,
+        }
+    }
+}
+
+/// SP map `misc_turret`s (`_sentry` sentries, MG nests) are turrets from load:
+/// their weapon is the `weaponinfo` key.
+pub(crate) fn install_placed(world: &mut World) {
+    if !super::players::single_player(world) {
+        return;
+    }
+    let candidates: Vec<u64> = world
+        .resource::<Runtime>()
+        .entities
+        .iter()
+        .filter(|(_, e)| e.kind == EntityKind::Map && &*e.classname == "misc_turret")
+        .map(|(id, _)| *id)
+        .collect();
+    let mut placed = 0;
+    for id in candidates {
+        let Value::String(info) = world
+            .resource_mut::<Runtime>()
+            .object_field(id, "weaponinfo")
+        else {
+            continue;
+        };
+        let weapon = match crate::script_player::weapon_named(&FrameWorld::from_world(world), &info)
+        {
+            Ok(weapon) => weapon,
+            Err(error) => {
+                diag::info!(Sim, "turret: misc_turret {id} weapon {info}: {error}");
+                continue;
+            }
+        };
+        let aim = math_iw4::angle_vectors(field_vector(world, id, "angles")).0;
+        let at = field_vector(world, id, "origin");
+        diag::info!(
+            Sim,
+            "turret: misc_turret {id} {info} at {:.0} {:.0} {:.0}",
+            at[0],
+            at[1],
+            at[2]
+        );
+        // A presence makes it shootable and lets its shots go through the
+        // combat pipeline as an entity attacker.
+        if world.resource::<Runtime>().entities[&id].presence.is_none()
+            && let Ok(presence) = super::presence::spawn_presence(world, at)
+        {
+            world
+                .resource_mut::<Runtime>()
+                .entities
+                .get_mut(&id)
+                .unwrap()
+                .presence = Some(presence);
+        }
+        let mut turret = Turret::new(weapon);
+        turret.aim = aim;
+        world
+            .resource_mut::<Runtime>()
+            .engine
+            .turrets
+            .insert(id, turret);
+        placed += 1;
+    }
+    if placed > 0 {
+        diag::info!(Sim, "turret: {placed} placed SP turrets");
+    }
+}
+
 fn turret_of(world: &World, receiver: &Value) -> Result<u64, String> {
     let runtime = world.resource::<Runtime>();
     match runtime.entity(receiver) {
@@ -130,30 +220,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         runtime.set_object_field(id, "angles", Value::Vector([0.0; 3]));
         runtime.set_object_field(id, "weaponinfo", Value::String(weaponinfo.into()));
         runtime.entities.get_mut(&id).unwrap().presence = Some(presence);
-        runtime.engine.turrets.insert(
-            id,
-            Turret {
-                weapon,
-                mode: "manual".into(),
-                owner: None,
-                team: None,
-                carried: false,
-                operable: true,
-                fire_enabled: true,
-                manual: None,
-                target: None,
-                firing: false,
-                on_target: false,
-                aim: [1.0, 0.0, 0.0],
-                arcs: [180.0, 180.0, 90.0, 90.0],
-                drop_pitch: 0.0,
-                convergence: [0.0; 2],
-                minimap: false,
-                solid: false,
-                minigun: false,
-                mode_change_wait: 0.0,
-            },
-        );
+        runtime.engine.turrets.insert(id, Turret::new(weapon));
         Ok(Value::Object(id))
     });
     registry.register(Function, "canspawnturret", |_, _, _| Ok(Value::Int(1)));
@@ -455,23 +522,51 @@ fn acquire(world: &mut World, object: u64, turret: &Turret, from: [f32; 3]) -> O
     let base = field_vector(world, object, "angles");
     let range = weapon_range(world, turret.weapon);
     let ignore = ignore_self(world, object);
-    let candidates: Vec<(u32, u64)> = world
-        .resource::<Runtime>()
-        .players
-        .iter()
-        .filter(|(_, slot)| &*slot.sessionstate == "playing")
-        .map(|(client, slot)| (*client, slot.object))
-        .collect();
+    // SP sentries fight by sentient team: players, actors and other sentients.
+    let candidates: Vec<(Option<u32>, u64, Option<Arc<str>>)> =
+        if super::players::single_player(world) {
+            let runtime = world.resource::<Runtime>();
+            let clients: Vec<(u64, u32)> = runtime
+                .players
+                .iter()
+                .map(|(client, slot)| (slot.object, *client))
+                .collect();
+            super::actor_combat::sentients(world)
+                .into_iter()
+                .filter(|s| s.object != object)
+                .map(|s| {
+                    let client = clients.iter().find(|c| c.0 == s.object).map(|c| c.1);
+                    (client, s.object, Some(s.team))
+                })
+                .collect()
+        } else {
+            world
+                .resource::<Runtime>()
+                .players
+                .iter()
+                .filter(|(_, slot)| &*slot.sessionstate == "playing")
+                .map(|(client, slot)| (Some(*client), slot.object, None))
+                .collect()
+        };
     let mut best: Option<(f32, u64, Vec3)> = None;
-    for (client, player) in candidates {
-        let alive = {
-            let frame = FrameWorld::from_world(world);
-            frame
-                .player(ClientId(client))
-                .and_then(|ps| (ps.health > 0).then_some(ps.origin))
+    for (client, player, team) in candidates {
+        let alive = match client {
+            Some(client) => {
+                let frame = FrameWorld::from_world(world);
+                frame
+                    .player(ClientId(client))
+                    .and_then(|ps| (ps.health > 0).then_some(ps.origin))
+            }
+            None => Some(field_vector(world, player, "origin")),
         };
         let Some(origin) = alive else { continue };
-        if !hostile(world, turret, player) {
+        let enemy = match team {
+            Some(team) => {
+                super::actor_combat::hostile(turret.team.as_deref().unwrap_or("allies"), &team)
+            }
+            None => hostile(world, turret, player),
+        };
+        if !enemy {
             continue;
         }
         let at = Vec3::from_array(origin) + Vec3::Z * TARGET_HEIGHT;
@@ -510,7 +605,11 @@ pub(crate) fn advance(world: &mut World) {
         }
         let mut turret = world.resource::<Runtime>().engine.turrets[&object].clone();
         let from = muzzle(world, object);
-        let active = turret.operable && !turret.carried && &*turret.mode != "sentry_offline";
+        // Inoperable only stops players using it: `_sentry` makes every SP
+        // sentry inoperable and still expects it to fight.
+        let active = (turret.operable || &*turret.mode == "sentry")
+            && !turret.carried
+            && &*turret.mode != "sentry_offline";
         let found = if active {
             acquire(world, object, &turret, from)
         } else {
@@ -522,6 +621,15 @@ pub(crate) fn advance(world: &mut World) {
             Some((target, at)) => {
                 if turret.target != Some(target) {
                     turret.on_target = false;
+                    if super::players::single_player(world) {
+                        diag::info!(
+                            Sim,
+                            "turret: {} ({}) targets {}",
+                            super::actor_combat::label(world, object),
+                            turret.team.as_deref().unwrap_or("-"),
+                            super::actor_combat::label(world, target)
+                        );
+                    }
                 }
                 turret.target = Some(target);
                 if let Some(wanted) = (at - Vec3::from_array(from)).try_normalize() {
@@ -563,6 +671,16 @@ pub(crate) fn advance(world: &mut World) {
 fn shoot(world: &mut World, object: u64) {
     let turret = world.resource::<Runtime>().engine.turrets[&object].clone();
     let from = muzzle(world, object);
+    if super::players::single_player(world)
+        && let Some(presence) = world
+            .resource::<Runtime>()
+            .entities
+            .get(&object)
+            .and_then(|e| e.presence)
+    {
+        sp_shot(world, object, presence, from, &turret);
+        return;
+    }
     let attacker = {
         let runtime = world.resource::<Runtime>();
         turret
@@ -571,6 +689,57 @@ fn shoot(world: &mut World, object: u64) {
             .map(ClientId)
     };
     fire_bullet(world, object, from, turret.aim, turret.weapon, attacker);
+}
+
+/// SP: the shot goes through the combat pipeline like an actor's (players,
+/// actors and AI events), from the turret's entity.
+fn sp_shot(
+    world: &mut World,
+    object: u64,
+    presence: crate::ScriptModelId,
+    from: [f32; 3],
+    turret: &Turret,
+) {
+    let tick = world.resource::<crate::step::StepRequest>().tick;
+    let number = world.resource::<Runtime>().entities[&object].number;
+    let angles = math_iw4::vect_to_angles(turret.aim);
+    let mut frame = FrameWorld::from_world(world);
+    if !frame.publishes_snapshot() {
+        return;
+    }
+    let shot_id = frame.alloc_shot_id();
+    let shot = crate::AcceptedShot {
+        shot_id,
+        attacker: crate::Attacker::Entity(presence),
+        attacker_life: crate::LifeSequence::default(),
+        hand: 0,
+        weapon: turret.weapon,
+        ammo_used: 1,
+        origin: from,
+        angles,
+        ads_frac: 0.0,
+        view_height_current: 0.0,
+        aim_spread_scale: 0.0,
+        perks0: 0,
+        combat_seed: shot_id.0,
+        owner_velocity: [0.0; 3],
+        spread_degrees: 0.0,
+    };
+    let emissions = crate::combat::phase_emit(&frame, core::slice::from_ref(&shot));
+    crate::combat::phase_trace(&mut frame, tick, &emissions);
+    frame.push_entity_event(
+        tick,
+        crate::EventAudience::All,
+        entity_iw4::predicted_weapon_fire_event(0, false),
+        crate::EntityEventPayload {
+            number,
+            weapon: turret.weapon,
+            correlation: shot_id.0,
+            origin: from,
+            direction: angles,
+            ..Default::default()
+        },
+    );
 }
 
 pub(crate) fn fire_bullet(
@@ -583,7 +752,11 @@ pub(crate) fn fire_bullet(
 ) {
     let range = weapon_range(world, weapon);
     let end = (Vec3::from_array(from) + Vec3::from_array(dir) * range).to_array();
-    let ignore = ignore_self(world, object);
+    // A player gunner rides next to the muzzle; their own rounds pass them.
+    let ignore = TraceIgnore {
+        client: attacker,
+        ..ignore_self(world, object)
+    };
     let TraceOutcome::Hit {
         collider,
         end,

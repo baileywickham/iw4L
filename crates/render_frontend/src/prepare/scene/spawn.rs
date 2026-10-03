@@ -426,10 +426,23 @@ pub(crate) fn spawn_world(
                 commands.insert_resource(crate::assemble::drawsurf::MapFrameFog::new(fog));
             }
             None => {
-                commands.remove_resource::<crate::assemble::drawsurf::MapFrameFog>();
+                // A map without createart fog (SP co_hunted) draws unfogged, as the engine's
+                // zero-opacity default; leaving the fog constants unproduced refuses every
+                // fogged world and model draw.
+                commands.insert_resource(crate::assemble::drawsurf::MapFrameFog::new(
+                    asset_world::ExpFog {
+                        start_dist: 100_000_000_000.0,
+                        halfway_dist: 100_000_000_001.0,
+                        color_rgb: [0.0; 3],
+                        max_opacity: 0.0,
+                        transition_time: 0.0,
+                        sun: None,
+                        volumetric: None,
+                    },
+                ));
                 diag::warn!(
                     World,
-                    "drawsurf createart fog: RED missing setExpFog — code constants 37/38/40/41/43 stay unproduced"
+                    "drawsurf createart fog: map sets no setExpFog — drawing without fog"
                 );
             }
         }

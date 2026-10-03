@@ -40,6 +40,11 @@ const SNAP: f32 = 20.0;
 const WALKABLE: f32 = 0.45;
 /// Ground this far below the free-fall path still holds a grounded vehicle.
 const HOLD: f32 = 2.0;
+/// Share of the remembered climb rate kept per substep (suspension: a short
+/// flat at a ramp's lip does not cancel the ramp).
+const CLIMB_KEEP: f32 = 0.6;
+/// Climb rate (u/s) that counts as a ramp; bumps below it are not remembered.
+const RAMP_CLIMB: f32 = 400.0;
 /// Impact speed into a wall (u/s) that wrecks the vehicle (`veh_collision`).
 const CRASH_SPEED: f32 = 900.0;
 const SOLID: u32 = 0x0080_0211;
@@ -60,6 +65,8 @@ pub(crate) struct Drive {
     pub driver: u32,
     pub input: DriveInput,
     vertical: f32,
+    /// Recent climb rate on the ground (u/s): a ramp's lip launches with it.
+    climb: f32,
     airborne: bool,
     yaw: f32,
     normal: [f32; 3],
@@ -150,8 +157,8 @@ fn spline_aim(runtime: &mut Runtime, client: u32, origin: [f32; 3]) -> Option<[f
 }
 
 /// Without a spline (`so_snowrace2`): the nearest gate (`flag_trigger`) in
-/// front, else the finish line.
-fn gate_aim(runtime: &mut Runtime, origin: [f32; 3], yaw: f32) -> Option<([f32; 3], bool)> {
+/// front, else the finish line (its id, to aim at the nearest point of it).
+fn gate_aim(runtime: &mut Runtime, origin: [f32; 3], yaw: f32) -> Option<([f32; 3], Option<u64>)> {
     let forward = math_iw4::angle_vectors([0.0, yaw, 0.0]).0;
     let ids: Vec<u64> = runtime.entities.keys().copied().collect();
     let mut gates = Vec::new();
@@ -164,7 +171,7 @@ fn gate_aim(runtime: &mut Runtime, origin: [f32; 3], yaw: f32) -> Option<([f32; 
         };
         match &*name {
             "flag_trigger" => gates.push(at),
-            "finishline" => finish = Some(at),
+            "finishline" => finish = Some((at, id)),
             _ => {}
         }
     }
@@ -177,8 +184,8 @@ fn gate_aim(runtime: &mut Runtime, origin: [f32; 3], yaw: f32) -> Option<([f32; 
             (ahead > 0.2).then_some((dist, at))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, at)| (at, true))
-        .or(finish.map(|at| (at, false)))
+        .map(|(_, at)| (at, None))
+        .or(finish.map(|(at, id)| (at, Some(id))))
 }
 
 /// Test driver (`IW4L_VEH_AUTODRIVE=1`, `=2` also logs each decision): full
@@ -197,8 +204,20 @@ fn autopilot(
     let (aim, cap) = match spline_aim(&mut world.resource_mut::<Runtime>(), client, origin) {
         Some(aim) => (aim, f32::MAX),
         None => match gate_aim(&mut world.resource_mut::<Runtime>(), origin, yaw)? {
-            (aim, true) => (aim, GATE_MPH * MPH),
-            (aim, false) => (aim, f32::MAX),
+            (aim, None) => (aim, GATE_MPH * MPH),
+            // The finish line is a wide plane: drive straight across it, not at
+            // its middle (off the track).
+            (aim, Some(finish)) => match super::triggers::world_bounds(world, finish) {
+                Some((lo, hi)) => (
+                    [
+                        origin[0].clamp(lo[0], hi[0]),
+                        origin[1].clamp(lo[1], hi[1]),
+                        aim[2],
+                    ],
+                    f32::MAX,
+                ),
+                None => (aim, f32::MAX),
+            },
         },
     };
     let want = math_iw4::vect_to_angles([aim[0] - origin[0], aim[1] - origin[1], 0.0])[1];
@@ -212,8 +231,11 @@ fn autopilot(
             .map(|(id, _)| *id)?;
         vector(runtime.object_field(id, "angles")).map_or(0.0, |a| a[0])
     };
-    // A steep straight descent (the run-in to the final jump) needs its speed.
-    let cap = if math_iw4::angle_subtract(pitch, 0.0) > 25.0 {
+    // A steep straight descent or a gate dead ahead (the run-in to the final
+    // jump) needs its speed.
+    let cap = if math_iw4::angle_subtract(pitch, 0.0) > 25.0
+        || math_iw4::angle_subtract(want, yaw).abs() < 10.0
+    {
         f32::MAX
     } else {
         cap
@@ -456,11 +478,19 @@ pub(crate) fn step(world: &mut World, id: u64) -> Vec<(&'static str, Vec<Value>)
             if drive.airborne {
                 drive.airborne = false;
                 drive.vertical = 0.0;
+                drive.climb = 0.0;
                 notes.push(("veh_landed", Vec::new()));
+            } else {
+                let climb = if velocity.z >= RAMP_CLIMB {
+                    velocity.z
+                } else {
+                    0.0
+                };
+                drive.climb = climb.max(drive.climb * CLIMB_KEEP);
             }
         } else if !drive.airborne {
             drive.airborne = true;
-            drive.vertical = velocity.z;
+            drive.vertical = velocity.z.max(drive.climb);
             normal = Vec3::Z;
             notes.push(("veh_leftground", Vec::new()));
         }
@@ -529,6 +559,7 @@ fn mount(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, S
             driver: client,
             input: DriveInput::default(),
             vertical: 0.0,
+            climb: 0.0,
             airborne: false,
             yaw: angles[1],
             normal: [0.0, 0.0, 1.0],

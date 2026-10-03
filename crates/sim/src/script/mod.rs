@@ -17,7 +17,7 @@ pub(crate) use runtime::Runtime;
 
 pub use error::{Fault, Location};
 pub(crate) use host::controls::{
-    action_slot_command, command_buttons, player_commands, select_location,
+    action_slot_command, command_buttons, cycle_weapon_command, player_commands, select_location,
 };
 pub use host::entities::{
     KeyType, LevelData, StringTable, parse_entity_string, parse_radiant_keys,
@@ -35,21 +35,22 @@ pub(crate) use host::players::{
     note_team_answer, personal_class, player_damage, script_seats, set_profile, sync_players,
 };
 pub(crate) use host::presence::sync_presence;
-pub(crate) use host::vehicle_drive::drive_input;
 pub use host::registry::{Native, NativeRegistry};
 pub(crate) use host::restart::restart_level;
+pub(crate) use host::vehicle_drive::drive_input;
 pub(crate) use host::weapons::sync_engine_events;
+pub(crate) use host::weapons::weapon_fired;
 pub use ir::IR_VERSION;
 pub(crate) use ir::{Binary, Callee, Function, Global, Op, Unary};
 pub use profile::catalog::{Builtin, Catalog, Namespace, Owner};
 pub use profile::iw4_startup::Iw4Startup;
 pub use profile::iw4sp_startup::Iw4SpStartup;
 pub use program::{ModuleIdentity, Program, Realm, Site};
+pub use runtime::usage::report as report_usage;
 pub(crate) use runtime::{
     advance_scheduler, copy_state, healthy, install, preflight, reset, start, start_with_player,
     take_signals,
 };
-pub use runtime::usage::report as report_usage;
 pub use source::{FileSources, SourceOrigin, SourceResolver, decode_source, normalize_module};
 pub(crate) use value::ArrayKey;
 pub use value::{ScriptString, Value};

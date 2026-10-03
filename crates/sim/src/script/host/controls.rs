@@ -459,6 +459,9 @@ fn raise_commands(world: &mut World, client: u32, fired: impl Fn(&str) -> bool) 
 }
 
 pub(crate) fn player_commands(world: &mut World, client: u32, cmd_buttons: u32, old_buttons: u32) {
+    if let Some(slot) = world.resource_mut::<Runtime>().players.get_mut(&client) {
+        slot.held_buttons = cmd_buttons;
+    }
     let pressed = cmd_buttons & !old_buttons;
     let released = old_buttons & !cmd_buttons;
     if pressed | released == 0 {
@@ -468,6 +471,11 @@ pub(crate) fn player_commands(world: &mut World, client: u32, cmd_buttons: u32, 
         Some(held) => released & command_buttons(&format!("+{held}")) != 0,
         None => pressed & command_buttons(command) != 0,
     });
+}
+
+pub(crate) fn cycle_weapon_command(world: &mut World, client: u32, next: bool) {
+    let command = if next { "weapnext" } else { "weapprev" };
+    raise_commands(world, client, |bound| bound == command);
 }
 
 pub(crate) fn action_slot_command(world: &mut World, client: u32, slot: u8) {

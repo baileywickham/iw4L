@@ -97,6 +97,12 @@ pub enum ClientAction {
         slot: u8,
     },
 
+    /// The client cycled its weapon (`weapnext` / `weapprev`); scripts may bind the command.
+    CycleWeapon {
+        request_id: ActionRequestId,
+        next: bool,
+    },
+
     ChooseDefaultClass {
         request_id: ActionRequestId,
         index: u8,
@@ -190,6 +196,7 @@ pub fn action_request_id(action: &ClientAction) -> ActionRequestId {
         | ClientAction::SetProfile { request_id, .. }
         | ClientAction::UseCopycat { request_id }
         | ClientAction::ActionSlot { request_id, .. }
+        | ClientAction::CycleWeapon { request_id, .. }
         | ClientAction::ChooseDefaultClass { request_id, .. }
         | ClientAction::MenuResponse { request_id, .. }
         | ClientAction::GiveKillstreak { request_id, .. }

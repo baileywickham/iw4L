@@ -1479,6 +1479,19 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                 ..Default::default()
             },
         );
+        if info.projectile.owner_entity.is_none()
+            && crate::script::host::players::single_player(world.ecs())
+        {
+            diag::info!(
+                Sim,
+                "projectile: client {} {} exploded at {:.0} {:.0} {:.0}",
+                info.projectile.owner.0,
+                world.weapon_script_name(info.projectile.weapon),
+                info.origin[0],
+                info.origin[1],
+                info.origin[2]
+            );
+        }
         if world.publishes_snapshot()
             && let Some(mut pool) = world.ecs().get_resource_mut::<crate::actor::ActorPool>()
             && !pool.actors.is_empty()
