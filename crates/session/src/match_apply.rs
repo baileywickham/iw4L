@@ -68,6 +68,7 @@ pub struct MatchInstallAuthority<'w> {
     input_gate: Res<'w, AuthorityInputGate>,
     cheats: Option<Res<'w, sim::HostCheats>>,
     profile: Option<Res<'w, sim::LocalPlayerProfile>>,
+    sp_profile: Option<Res<'w, sim::SpProfile>>,
     previous: Option<Res<'w, AuthorityWorld>>,
     account: Option<Res<'w, crate::LocalAccount>>,
     local: Option<Res<'w, net::LocalPresentClient>>,
@@ -114,6 +115,7 @@ pub fn apply_prepared_match(
         input_gate,
         cheats,
         profile,
+        sp_profile,
         previous,
         account,
         local,
@@ -332,6 +334,12 @@ pub fn apply_prepared_match(
                 .or_else(|| profile.as_deref().copied())
                 .unwrap_or(sim::LocalPlayerProfile::default());
             sim.set_local_player_profile(profile);
+            let sp_profile = previous
+                .as_ref()
+                .map(|authority| authority.0.sp_profile().clone())
+                .or_else(|| sp_profile.as_deref().cloned())
+                .unwrap_or_default();
+            sim.set_sp_profile(sp_profile);
         }
         content.set_weapon_def_scales(weapons.0.scales_table());
         let combat = combat_table::from_registry(&weapons.0, lochit_table);

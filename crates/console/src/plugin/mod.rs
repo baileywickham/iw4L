@@ -94,6 +94,7 @@ impl Plugin for ConsolePlugin {
             .init_resource::<crate::user_settings::PendingMenuBinding>()
             .init_resource::<crate::user_settings::UserSettingsPersistence>()
             .init_resource::<sim::LocalPlayerProfile>()
+            .init_resource::<sim::SpProfile>()
             .init_resource::<crate::local_profile::ProfilePersistence>()
             .init_resource::<crate::local_account::AccountPersistence>()
             .add_message::<ConsoleCommand>()
@@ -155,6 +156,7 @@ impl Plugin for ConsolePlugin {
                         crate::feature_dispatch::route_replay_commands,
                         crate::feature_dispatch::route_ui_commands,
                         (
+                            crate::specops_menu::route,
                             crate::frontend::route,
                             crate::class_menu::route,
                             crate::barracks_menu::route,
@@ -756,6 +758,7 @@ fn setup_console(
         .unwrap_or_default();
     crate::feature_dispatch::register_feature_commands(&mut registry, &maps);
     crate::frontend::register(&mut registry);
+    crate::specops_menu::register(&mut registry);
     crate::class_menu::register(&mut registry);
     crate::barracks_menu::register(&mut registry);
     let font = fonts.add(Font::from_bytes(EMBEDDED_FONT.to_vec()));

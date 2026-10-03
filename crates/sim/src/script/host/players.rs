@@ -1170,7 +1170,8 @@ pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<V
                 .filter(|&n| n > 0)
                 .unwrap_or(ps.map_or(0, |ps| ps.max_health)),
         ),
-        "name" => Value::String(client_name(&meta?.name).into()),
+        // SP names the same client field `playername`.
+        "name" | "playername" => Value::String(client_name(&meta?.name).into()),
         "score" => Value::Int(meta?.score),
         "kills" => Value::Int(meta?.kills),
         "deaths" => Value::Int(meta?.deaths),

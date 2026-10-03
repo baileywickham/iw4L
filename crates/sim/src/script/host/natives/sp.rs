@@ -13,7 +13,6 @@ pub(crate) struct SpState {
     threat_groups: BTreeSet<String>,
     threat_bias: BTreeMap<(String, String), i32>,
     entity_groups: BTreeMap<u64, String>,
-    profile: BTreeMap<String, Value>,
 }
 
 /// `missionSOHighestDifficulty` and `missionHighestDifficulty` hold one digit per level.
@@ -35,27 +34,29 @@ pub(crate) fn threat_bias(world: &World, attacker: u64, target: u64) -> i32 {
         .unwrap_or(0)
 }
 
+/// Profile fields live in [`crate::SpProfile`], which the host loads from and saves to disk.
 pub(crate) fn profile_value(world: &World, name: &str) -> Value {
     let key = name.to_ascii_lowercase();
-    if let Some(value) = world.resource::<Runtime>().sp.profile.get(&key) {
-        return value.clone();
-    }
-    match key.as_str() {
-        "missionsohighestdifficulty" | "missionhighestdifficulty" => {
-            Value::string(&"0".repeat(PROFILE_DIGITS))
-        }
-        "autoaim" => Value::Int(1),
-        _ => Value::Int(0),
+    let digits = crate::SpProfile::DIGIT_FIELDS.contains(&key.as_str());
+    match world.resource::<crate::SpProfile>().get(&key) {
+        Some(text) if digits => Value::string(text),
+        Some(text) => text
+            .trim()
+            .parse::<i32>()
+            .map_or_else(|_| Value::string(text), Value::Int),
+        None if digits => Value::string(&"0".repeat(PROFILE_DIGITS)),
+        None if key == "autoaim" => Value::Int(1),
+        None => Value::Int(0),
     }
 }
 
 pub(crate) fn set_profile_value(world: &mut World, name: &str, value: Value) {
-    diag::info!(Sim, "spec ops: profile {name}={}", describe(&value));
-    world
-        .resource_mut::<Runtime>()
-        .sp
-        .profile
-        .insert(name.to_ascii_lowercase(), value);
+    let text = match &value {
+        Value::Float(value) => (*value as i32).to_string(),
+        other => describe(other),
+    };
+    diag::info!(Sim, "spec ops: profile {name}={text}");
+    world.resource_mut::<crate::SpProfile>().set(name, text);
 }
 
 fn describe(value: &Value) -> String {
@@ -118,6 +119,27 @@ pub(crate) fn eog_summary(world: &mut World, menu: &str) {
         if cells.iter().any(|cell| !cell.is_empty()) {
             diag::info!(Sim, "spec ops: eog row {row}: {} | {}", cells[0], cells[1]);
         }
+    }
+}
+
+/// Logs the difficulty `_gameskill` applied to a player when it changes: the skill the scripts
+/// read and the player fields actor hits and incoming damage use.
+fn log_difficulty(world: &mut World, player: u64, skill: i32) {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut runtime = world.resource_mut::<Runtime>();
+    let fields = [
+        "attackeraccuracy",
+        "damagemultiplier",
+        "deathinvulnerabletime",
+    ]
+    .map(|name| format!("{name}={}", describe(&runtime.object_field(player, name))));
+    let line = format!("gameskill={skill} {}", fields.join(" "));
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *last != line {
+        diag::info!(Sim, "spec ops: player {player} {line}");
+        *last = line;
     }
 }
 
@@ -233,7 +255,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         Ok(Value::Object(id))
     });
 
-    registry.register(Method, "getplayersetting", |world, _, args| {
+    registry.register(Method, "getplayersetting", |world, receiver, args| {
         let name = string(args, 0)?.to_ascii_lowercase();
         match name.as_str() {
             "gameskill" => {
@@ -243,6 +265,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
                     .get("g_gameskill")
                     .and_then(|text| text.trim().parse::<i32>().ok())
                     .unwrap_or(1);
+                if let Value::Object(player) = receiver {
+                    log_difficulty(world, *player, skill);
+                }
                 Ok(Value::Int(skill))
             }
             _ => Ok(Value::Int(0)),

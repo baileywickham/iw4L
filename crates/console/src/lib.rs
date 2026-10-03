@@ -30,6 +30,7 @@ mod local_account;
 mod local_profile;
 pub mod plugin;
 pub mod registry;
+mod specops_menu;
 mod startup;
 pub mod suggest;
 mod synthetic_input;

@@ -19,7 +19,7 @@ pub mod identities;
 pub mod input;
 mod item;
 mod local_profile;
-pub use local_profile::LocalPlayerProfile;
+pub use local_profile::{LocalPlayerProfile, SpProfile};
 mod mantle_xanim;
 pub mod match_state;
 mod path_graph;

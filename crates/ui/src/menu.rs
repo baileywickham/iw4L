@@ -61,6 +61,7 @@ pub fn install_frontend_menus(catalog: &mut asset_game::MenuCatalog) -> Result<(
     catalog.load_definitions(include_str!("../menus/barracks.json"))?;
     catalog.load_definitions(include_str!("../menus/settings.json"))?;
     catalog.load_definitions(include_str!("../menus/controller.json"))?;
+    catalog.load_definitions(include_str!("../menus/specops.json"))?;
     let slider = catalog
         .get("pc_options_video")
         .and_then(|menu| {

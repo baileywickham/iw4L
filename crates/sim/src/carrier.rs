@@ -27,6 +27,7 @@ impl Default for SimWorld {
         ecs.entity_mut(state_entity).insert(PayloadIndex::default());
         install_state_entity(&mut ecs, state_entity);
         ecs.insert_resource(crate::LocalPlayerProfile::default());
+        ecs.insert_resource(crate::SpProfile::default());
         ecs.insert_resource(crate::PersistentDataStore::default());
         ecs.insert_resource(crate::script::Runtime::default());
         ecs.insert_resource(crate::script::Mechanics::default());
@@ -54,6 +55,7 @@ impl Clone for SimWorld {
             collect_dropped_items(&self.ecs),
         );
         ecs.insert_resource(*self.ecs.resource::<crate::LocalPlayerProfile>());
+        ecs.insert_resource(self.ecs.resource::<crate::SpProfile>().clone());
         ecs.insert_resource(self.ecs.resource::<crate::PersistentDataStore>().clone());
         crate::script::copy_state(&self.ecs, &mut ecs);
         Self {
@@ -113,6 +115,14 @@ impl SimWorld {
     }
 
     pub fn set_local_player_profile(&mut self, profile: crate::LocalPlayerProfile) {
+        self.ecs.insert_resource(profile);
+    }
+
+    pub fn sp_profile(&self) -> &crate::SpProfile {
+        self.ecs.resource::<crate::SpProfile>()
+    }
+
+    pub fn set_sp_profile(&mut self, profile: crate::SpProfile) {
         self.ecs.insert_resource(profile);
     }
 

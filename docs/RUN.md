@@ -92,6 +92,14 @@ launches in `$XDG_CONFIG_HOME/iw4l/settings.cfg` or `~/.config/iw4l/settings.cfg
 on Linux; `IW4L_SETTINGS_PATH` selects a separate settings file for probes.
 Listen hosts also persist the three script completion percentages in `profile.cfg`
 beside that file. `IW4L_PROFILE_PATH` overrides the completion-profile path.
+Spec Ops profile fields (`missionsohighestdifficulty` — one digit per mission, stars =
+digit − 1 — and best times `s0`…`s22` in ms) go to `specops.cfg` beside `profile.cfg`.
+
+Main menu → Special Ops lists the 23 missions by tier (Alpha…Echo) with stars and
+best times; a mission opens Regular / Hardened / Veteran (`g_gameskill` 1–3), then
+Play Solo or Host Co-op (the normal lobby, mode `so`). Scripted: `openmenu
+specops_select; ui_so_tier 0; ui_so_pick 0; ui_so_skill 3; ui_so_start` (co-op:
+`ui_so_host; ui_create_lobby`).
 
 Listen hosts and clients store a signing key and derived account ID in
 `account.dat` beside `settings.cfg`; `IW4L_ACCOUNT_PATH` overrides that path.
