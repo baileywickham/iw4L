@@ -551,7 +551,9 @@ fn run_entity_types_system(ecs: &mut World) {
     let tick = ecs.resource::<StepRequest>().tick;
     let msec = ecs.resource::<StepRequest>().msec;
     let mut world = frame_world(ecs);
-    let allow_move = world.phase() == MatchPhase::Playing;
+    // Spec Ops has no prematch: it stays in warmup, and its missiles and movers run.
+    let allow_move = world.phase() == MatchPhase::Playing
+        || world.game_mode_kind() == gamemode_iw4::GameModeKind::SpecOps;
     world.enter_kernel_phase(crate::gentity::KernelPhase::RunEntityTypes);
     if allow_move {
         phase_materialize_entity_dobjs(&mut world);

@@ -49,7 +49,7 @@ fn missile_of(world: &World, receiver: &Value) -> Result<(u64, ProjectileId, i32
     }
 }
 
-fn adopt(
+pub(crate) fn adopt(
     world: &mut World,
     projectile: &crate::ProjectileState,
     classname: &str,

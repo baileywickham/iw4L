@@ -94,9 +94,27 @@ pub(crate) fn magic_bullet(
         crate::combat::phase_trace(world, tick, &emissions);
         return Ok(None);
     }
-    let crate::Attacker::Client(owner) = attacker else {
-        return Err("MagicBullet projectiles need an owning player".into());
-    };
+    if let crate::Attacker::Entity(entity) = attacker
+        && matches!(
+            kind,
+            Some(FireWeaponKind::GrenadeLauncher | FireWeaponKind::ThrownGrenade)
+        )
+    {
+        let speed = world
+            .equipment_facts_for(weapon)
+            .map_or(600.0, |facts| facts.projectile_speed.max(1) as f32);
+        let dir = math_iw4::angle_vectors(shot.angles).0;
+        return Ok(crate::equipment::spawn_entity_grenade(
+            world,
+            entity,
+            weapon,
+            tick,
+            start,
+            dir.map(|c| c * speed),
+            None,
+        ));
+    }
+    let owner = attacker.client().unwrap_or(crate::equipment::NO_OWNER);
     let launched = match kind {
         Some(FireWeaponKind::Missile) => fire_missile(world, tick, &shot),
         Some(kind @ (FireWeaponKind::GrenadeLauncher | FireWeaponKind::ThrownGrenade)) => {
@@ -163,7 +181,7 @@ fn fire_missile(
         let (_, right, _) = math_iw4::angle_vectors(shot.angles);
         origin = core::array::from_fn(|i| origin[i] + right[i] * 2.5);
     }
-    let owner = shot.attacker.client()?;
+    let owner = shot.attacker.client().unwrap_or(crate::equipment::NO_OWNER);
     let lock = world
         .client_meta(owner)
         .map(|m| m.weapon_lock)
@@ -210,6 +228,7 @@ fn fire_missile(
         id,
         owner,
         owner_life: shot.attacker_life,
+        owner_entity: shot.attacker.entity(),
         weapon: shot.weapon,
         origin,
         velocity,

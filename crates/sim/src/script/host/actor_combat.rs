@@ -343,6 +343,7 @@ pub(crate) fn run(world: &mut World, actors: &[(i32, ActorId, u64)], now: i64) {
             sense(world, *id, *object, now, &everyone, &mut budget);
         }
     }
+    suppression(world, actors, now);
     let dying: Vec<(ActorId, u64, i64, Option<u64>)> = world
         .resource::<ActorPool>()
         .actors
@@ -358,6 +359,159 @@ pub(crate) fn run(world: &mut World, actors: &[(i32, ActorId, u64)], now: i64) {
             become_corpse(world, id, object);
         }
     }
+}
+
+/// A bullet line this close to an actor's chest passes it.
+const WHIZ_DIST: f32 = 96.0;
+const SUPPRESSION_WAIT_MS: i64 = 2000;
+const SUPPRESSION_DURATION_MS: i64 = 5000;
+
+fn segment_dist(point: [f32; 3], start: [f32; 3], end: [f32; 3]) -> (f32, f32) {
+    let d = sub(end, start);
+    let len_sq = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let t = if len_sq > 0.0 {
+        ((point[0] - start[0]) * d[0] + (point[1] - start[1]) * d[1] + (point[2] - start[2]) * d[2])
+            / len_sq
+    } else {
+        0.0
+    };
+    let t = t.clamp(0.0, 1.0);
+    let closest = [
+        start[0] + d[0] * t,
+        start[1] + d[1] * t,
+        start[2] + d[2] * t,
+    ];
+    (length(sub(point, closest)), t)
+}
+
+fn shooter_object(world: &World, attacker: crate::Attacker) -> Option<u64> {
+    let runtime = world.resource::<Runtime>();
+    match attacker {
+        crate::Attacker::Client(client) => runtime.players.get(&client.0).map(|s| s.object),
+        crate::Attacker::Entity(id) => runtime.presented_by(id),
+    }
+}
+
+/// `Actor_AddSuppressionLine` / `Actor_DecaySuppressionLines`: hostile bullets
+/// passing close feed `suppressionmeter`; at a cover node they suppress
+/// (`"suppression"`, `suppressionstarttime`) for `suppressionduration`, elsewhere
+/// they only whiz by (`"bulletwhizby"`).
+fn suppression(world: &mut World, actors: &[(i32, ActorId, u64)], now: i64) {
+    let lines = std::mem::take(&mut world.resource_mut::<ActorPool>().whizzes);
+    for (start, end, attacker) in lines {
+        let Some(shooter) = shooter_object(world, attacker) else {
+            continue;
+        };
+        let shooter_team = match super::actors::actor_of(world, shooter) {
+            Some(other) => world
+                .resource::<ActorPool>()
+                .actors
+                .get(&other)
+                .map(|a| a.team.to_string()),
+            None => match super::players::entity_field(world, shooter, "team") {
+                Value::String(team) => Some(team.to_string()),
+                _ => Some("allies".into()),
+            },
+        };
+        for (_, id, object) in actors {
+            if *object == shooter {
+                continue;
+            }
+            let Some((team, ignore)) = world
+                .resource::<ActorPool>()
+                .actors
+                .get(id)
+                .map(|a| (a.team.clone(), a.float_field("ignoresuppression") != 0.0))
+            else {
+                continue;
+            };
+            if !shooter_team.as_deref().is_some_and(|t| hostile(&team, t)) {
+                continue;
+            }
+            let chest = {
+                let at = origin(world, *object);
+                [at[0], at[1], at[2] + 48.0]
+            };
+            let (dist, t) = segment_dist(chest, start, end);
+            if dist > WHIZ_DIST || t >= 1.0 {
+                continue;
+            }
+            let at_cover = super::actor_cover::near_claimed(world, *id, *object, 32.0);
+            let started = world
+                .resource_mut::<ActorPool>()
+                .actors
+                .get_mut(id)
+                .map(|a| {
+                    a.suppression = (a.suppression + 0.15).min(1.0);
+                    if at_cover && !ignore {
+                        a.suppressed_ms = now;
+                        if a.suppressed_since == 0 {
+                            a.suppressed_since = now;
+                            return true;
+                        }
+                    }
+                    false
+                });
+            let note = if at_cover && !ignore {
+                "suppression"
+            } else {
+                "bulletwhizby"
+            };
+            if started == Some(true) {
+                diag::info!(
+                    Sim,
+                    "actor: {} suppressed by {} at cover",
+                    label(world, *object),
+                    label(world, shooter)
+                );
+            }
+            raise(
+                world,
+                Value::Object(*object),
+                note,
+                vec![Value::Object(shooter)],
+            );
+        }
+    }
+    for (_, id, object) in actors {
+        let ended = world
+            .resource_mut::<ActorPool>()
+            .actors
+            .get_mut(id)
+            .is_some_and(|a| {
+                a.suppression = (a.suppression - 0.01).max(0.0);
+                let duration = a
+                    .fields
+                    .get("suppressionduration")
+                    .map_or(SUPPRESSION_DURATION_MS, |_| {
+                        a.float_field("suppressionduration") as i64
+                    });
+                if a.suppressed_since > 0 && now - a.suppressed_ms >= duration {
+                    a.suppressed_since = 0;
+                    return true;
+                }
+                false
+            });
+        if ended {
+            raise(world, Value::Object(*object), "suppression_end", Vec::new());
+        }
+    }
+}
+
+fn suppression_state(world: &World, id: ActorId) -> Option<(i64, i64, f32, bool, i64)> {
+    world.resource::<ActorPool>().actors.get(&id).map(|a| {
+        (
+            a.suppressed_since,
+            a.suppressed_ms,
+            a.suppression,
+            a.float_field("ignoresuppression") != 0.0,
+            a.fields
+                .get("suppressionwait")
+                .map_or(SUPPRESSION_WAIT_MS, |_| {
+                    a.float_field("suppressionwait") as i64
+                }),
+        )
+    })
 }
 
 fn hitloc_of_tag(tag: &str) -> &'static str {
@@ -537,7 +691,26 @@ pub(crate) fn damage(
         .get(&object)
         .is_some_and(|e| e.linked_to.is_some());
     if allow_pain && !busy && !linked && amount as f32 >= min_pain {
+        let pains = world
+            .resource_mut::<ActorPool>()
+            .actors
+            .get_mut(&id)
+            .map_or(0, |a| {
+                a.pains += 1;
+                a.pains
+            });
+        diag::info!(
+            Sim,
+            "actor: {} pain {pains} ({amount} at {location}, yaw {damage_yaw:.0})",
+            label(world, object)
+        );
         switch_animscript(world, id, object, "pain".into(), now);
+    } else if !allow_pain || busy {
+        diag::debug!(
+            Sim,
+            "actor: {} no pain (allowpain={allow_pain} busy={busy} linked={linked})",
+            label(world, object)
+        );
     }
 }
 
@@ -803,15 +976,18 @@ fn shoot(
         .actors
         .get(&id)
         .map_or([0.0; 3], |a| a.velocity);
+    let number = world.resource::<Runtime>().entities[&object].number;
+    let shot_id = FrameWorld::from_world(world).alloc_shot_id();
+    let angles = math_iw4::vect_to_angles(sub(aim, from));
     let shot = crate::AcceptedShot {
-        shot_id: crate::ShotId(0),
+        shot_id,
         attacker: crate::Attacker::Entity(presence),
         attacker_life: crate::LifeSequence::default(),
         hand: 0,
         weapon,
         ammo_used: 1,
         origin: from,
-        angles: math_iw4::vect_to_angles(sub(aim, from)),
+        angles,
         ads_frac: 0.0,
         view_height_current: 0.0,
         aim_spread_scale: 0.0,
@@ -826,6 +1002,19 @@ fn shoot(
     }
     let emissions = crate::combat::phase_emit(&frame, core::slice::from_ref(&shot));
     crate::combat::phase_trace(&mut frame, tick, &emissions);
+    frame.push_entity_event(
+        tick,
+        crate::EventAudience::All,
+        entity_iw4::predicted_weapon_fire_event(0, false),
+        crate::EntityEventPayload {
+            number,
+            weapon,
+            correlation: shot_id.0,
+            origin: from,
+            direction: angles,
+            ..Default::default()
+        },
+    );
     Ok(Value::Undefined)
 }
 
@@ -918,6 +1107,21 @@ pub(crate) fn load_field(world: &mut World, id: ActorId, name: &str) -> Option<V
                     .map_or(Value::Undefined, Value::Vector),
             )
         }
+        "grenade" => Some(
+            world
+                .resource::<ActorPool>()
+                .actors
+                .get(&id)
+                .and_then(|a| a.grenade)
+                .filter(|o| live(world, *o))
+                .map_or(Value::Undefined, Value::Object),
+        ),
+        "suppressionmeter" => Some(Value::Float(
+            suppression_state(world, id).map_or(0.0, |s| s.2),
+        )),
+        "suppressionstarttime" => Some(Value::Int(
+            suppression_state(world, id).map_or(0, |s| s.0 as i32),
+        )),
         "lastattacker" => Some(
             world
                 .resource::<ActorPool>()
@@ -961,6 +1165,31 @@ fn weapon_row(world: &mut World, args: &[Value]) -> Result<weapon_iw4::WeaponCom
 pub(crate) fn register(registry: &mut NativeRegistry) {
     use Namespace::{Function, Method};
 
+    // `bulletspread( start, end, degrees )`: the end point turned by a random
+    // angle up to `degrees` about the line, at the same distance.
+    registry.register(Function, "bulletspread", |world, _, args| {
+        let (start, end, spread) = (vector(args, 0)?, vector(args, 1)?, float(args, 2)?);
+        let line = sub(end, start);
+        let dist = length(line);
+        if dist <= 0.0 {
+            return Ok(Value::Vector(end));
+        }
+        let dir = normalized(line);
+        let (cone, spin) = {
+            let mut pool = world.resource_mut::<ActorPool>();
+            (pool.random(), pool.random())
+        };
+        let angles = math_iw4::vect_to_angles(dir);
+        let (_, right, up) = math_iw4::angle_vectors(angles);
+        let off = (spread * cone).to_radians();
+        let theta = spin * std::f32::consts::TAU;
+        let turned: [f32; 3] = std::array::from_fn(|i| {
+            dir[i] * off.cos() + (right[i] * theta.cos() + up[i] * theta.sin()) * off.sin()
+        });
+        Ok(Value::Vector(std::array::from_fn(|i| {
+            start[i] + turned[i] * dist
+        })))
+    });
     registry.register(Function, "isexplosivedamagemod", |_, _, args| {
         let means = string(args, 0)?.to_ascii_uppercase();
         Ok(Value::Int(
@@ -986,37 +1215,6 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         if !actor_or_corpse(world, receiver) {
             super::natives::player::corpse_anim(world, receiver)?;
         }
-        Ok(Value::Int(0))
-    });
-    // No throw solution is offered (grenades are a later stage): undefined.
-    for name in [
-        "checkgrenadethrow",
-        "checkgrenadethrowpos",
-        "checkgrenadelaunch",
-        "checkgrenadelaunchpos",
-    ] {
-        registry.register(Method, name, |world, receiver, _| {
-            receiver_actor(world, receiver)?;
-            Ok(Value::Undefined)
-        });
-    }
-    // No reacquire path is offered: the caller falls back to its other options.
-    for name in ["findreacquiredirectpath", "findreacquireproximatepath"] {
-        registry.register(Method, name, |world, receiver, _| {
-            receiver_actor(world, receiver)?;
-            Ok(Value::Int(0))
-        });
-    }
-    for name in ["reacquiremove", "trimpathtoattack"] {
-        registry.register(Method, name, |world, receiver, _| {
-            receiver_actor(world, receiver)?;
-            Ok(Value::Undefined)
-        });
-    }
-    // No sidestep to reacquire: the caller tries its other options.
-    registry.register(Method, "reacquirestep", |world, receiver, args| {
-        receiver_actor(world, receiver)?;
-        float(args, 0)?;
         Ok(Value::Int(0))
     });
     // `isgrenadepossafe( target, pos )`: no live squadmate within the blast radius.
@@ -1248,12 +1446,24 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         }
         Ok(Value::Undefined)
     });
-    for name in ["issuppressed", "ismovesuppressed", "issuppressionwaiting"] {
-        registry.register(Method, name, |world, receiver, _| {
-            receiver_actor(world, receiver)?;
-            Ok(Value::Int(0))
+    registry.register(Method, "issuppressed", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let since = suppression_state(world, id).map_or(0, |s| s.0);
+        Ok(Value::Int((since > 0).into()))
+    });
+    registry.register(Method, "issuppressionwaiting", |world, receiver, _| {
+        let (id, _) = receiver_actor(world, receiver)?;
+        let now = now_ms(world);
+        let waiting = suppression_state(world, id).is_some_and(|(since, last, _, ignore, wait)| {
+            !ignore && since > 0 && now - last < wait
         });
-    }
+        Ok(Value::Int(waiting.into()))
+    });
+    // Friendly fire never blocks movement here.
+    registry.register(Method, "ismovesuppressed", |world, receiver, _| {
+        receiver_actor(world, receiver)?;
+        Ok(Value::Int(0))
+    });
     for name in [
         "updateplayersightaccuracy",
         "clearpotentialthreat",
@@ -1300,10 +1510,53 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         kill_actor(world, id, object, attacker, "MOD_SUICIDE", "none");
         Ok(Value::Undefined)
     });
+    // `dropweapon( weapon, position, chance )`: a pickup item falls from the tag
+    // the weapon hangs on.
     registry.register(Method, "dropweapon", |world, receiver, args| {
-        receiver_actor(world, receiver)?;
-        string(args, 0)?;
-        Ok(Value::Undefined)
+        let (_, object) = receiver_actor(world, receiver)?;
+        let name = string(args, 0)?;
+        let position = optional(args, 1, string)?.unwrap_or_else(|| "right".into());
+        if name == "none" || name.is_empty() {
+            return Ok(Value::Undefined);
+        }
+        let weapon = crate::script_player::weapon_named(&FrameWorld::from_world(world), &name)?;
+        let tag = match position.as_str() {
+            "left" => "tag_weapon_left",
+            "chest" => "tag_weapon_chest",
+            "back" => "tag_stowed_back",
+            _ => "tag_weapon_right",
+        };
+        let at = match super::presence::tag_world(world, object, tag) {
+            Some((at, _)) => at,
+            None => {
+                let o = origin(world, object);
+                [o[0], o[1], o[2] + 40.0]
+            }
+        };
+        let yaw = match super::players::entity_field(world, object, "angles") {
+            Value::Vector(v) => v[1],
+            _ => 0.0,
+        };
+        let tick = world.resource::<crate::step::StepRequest>().tick;
+        let owner = world.resource::<Runtime>().entities[&object].number;
+        let number = crate::item::spawn_weapon_item(
+            &mut FrameWorld::from_world(world),
+            tick,
+            weapon,
+            at,
+            yaw,
+            owner,
+            true,
+        );
+        if number == playerstate_iw4::ENTITYNUM_NONE {
+            return Ok(Value::Undefined);
+        }
+        diag::info!(
+            Sim,
+            "actor: {} dropped {name} as item {number}",
+            label(world, object)
+        );
+        super::natives::player::new_item_entity(world, number, &format!("weapon_{name}"))
     });
     registry.register(Function, "getcorpsearray", |world, _, _| {
         let corpses: Vec<Value> = {

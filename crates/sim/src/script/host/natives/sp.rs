@@ -59,6 +59,9 @@ pub(crate) fn set_profile_value(world: &mut World, name: &str, value: Value) {
 }
 
 fn describe(value: &Value) -> String {
+    if let Value::String(text) = value {
+        return text.to_string();
+    }
     crate::script::runtime::to_text(value).unwrap_or_else(|| kind(value).to_owned())
 }
 
@@ -90,6 +93,32 @@ fn mission_result(world: &mut World, outcome: &str) {
     ]
     .map(|name| format!("{name}={}", level_field(world, name)));
     diag::info!(Sim, "spec ops: mission {outcome} {}", fields.join(" "));
+}
+
+/// `maps\_endmission::coop_eog_summary` fills dvars for the EOG menu, then opens it; the menu is not
+/// drawn yet, so the result and the summary table the mission built go to the log.
+pub(crate) fn eog_summary(world: &mut World, menu: &str) {
+    let dvars = world.resource::<Runtime>().dvars.clone();
+    let get = |name: &str| dvars.get(name).cloned().unwrap_or_default();
+    let outcome = match get("ui_mission_success").as_str() {
+        "1" => "success",
+        _ => "failed",
+    };
+    let fields = ["finished_time", "star_count", "targets_hit", "friendlies_hit"]
+        .map(|name| format!("{name}={}", level_field(world, name)));
+    diag::info!(
+        Sim,
+        "spec ops: mission {outcome} map={} time={} {} menu={menu}",
+        level_field(world, "script"),
+        get("elapsed_mission_time"),
+        fields.join(" ")
+    );
+    for row in 1..=6 {
+        let cells = [1, 2].map(|col| get(&format!("ui_eog_r{row}c{col}_player1")));
+        if cells.iter().any(|cell| !cell.is_empty()) {
+            diag::info!(Sim, "spec ops: eog row {row}: {} | {}", cells[0], cells[1]);
+        }
+    }
 }
 
 pub(crate) fn register(registry: &mut NativeRegistry) {

@@ -322,6 +322,7 @@ fn decode_projectile(input: &mut WireReader<'_>) -> Result<ProjectileState, Wire
         id: ProjectileId(input.get_u32()?),
         owner: ClientId(input.get_u32()?),
         owner_life: sim::LifeSequence(input.get_u32()?),
+        owner_entity: None,
         weapon: input.get_u32()?,
         origin: [input.get_f32()?, input.get_f32()?, input.get_f32()?],
         velocity: [input.get_f32()?, input.get_f32()?, input.get_f32()?],

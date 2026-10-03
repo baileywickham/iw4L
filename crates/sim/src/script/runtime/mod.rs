@@ -130,6 +130,7 @@ fn frame(
         stack_base,
         receiver,
         locals,
+        endons: false,
     }
 }
 
@@ -1124,6 +1125,7 @@ fn instruction(
             let name = event_name(pop(thread)?)?;
             let receiver = event_receiver(pop(thread)?)?;
             let frame = thread.frames.len() - 1;
+            thread.frames[frame].endons = true;
             world.resource_mut::<Runtime>().waiters.push(Waiter {
                 receiver,
                 name,
@@ -1135,10 +1137,14 @@ fn instruction(
             let value = pop(thread)?;
             let depth = thread.frames.len() - 1;
             let serial = thread.serial;
-            world.resource_mut::<Runtime>().waiters.retain(|w| {
-                w.thread != serial
-                    || !matches!(w.kind, WaiterKind::Endon { frame } if frame >= depth)
-            });
+            // Deeper frames already dropped their endons when they returned
+            // or unwound, so only this frame's own can be left.
+            if thread.frames[depth].endons {
+                world.resource_mut::<Runtime>().waiters.retain(|w| {
+                    w.thread != serial
+                        || !matches!(w.kind, WaiterKind::Endon { frame } if frame >= depth)
+                });
+            }
             let frame = thread
                 .frames
                 .pop()
@@ -1376,18 +1382,20 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     }
     world.resource_mut::<Runtime>().last_tick = Some(tick);
     let now = i64::from(tick.0) * i64::from(crate::MATCH_TICK_MS);
+    let started = usage::stats_enabled().then(std::time::Instant::now);
     super::host::mechanics::deliver_finished(world);
     deliver_external(world, now);
-    let threads: Vec<_> = world
-        .query::<(Entity, &Thread)>()
-        .iter(world)
-        .map(|(entity, thread)| (entity, thread.serial, entity_receivers(world, thread)))
-        .collect();
-    let dead: Vec<_> = threads
-        .into_iter()
-        .filter(|(_, _, receivers)| any_deleted(world, receivers))
-        .map(|(entity, serial, _)| (entity, serial))
-        .collect();
+    let doomed = doomed_threads(world);
+    let dead: Vec<_> = if doomed.is_empty() {
+        Vec::new()
+    } else {
+        world
+            .query::<(Entity, &Thread)>()
+            .iter(world)
+            .filter(|(_, thread)| doomed.contains(&thread.serial))
+            .map(|(entity, thread)| (entity, thread.serial))
+            .collect()
+    };
     for (entity, serial) in dead {
         kill(world, entity, serial);
     }
@@ -1418,7 +1426,22 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         runtime.buckets.remove(&now);
     }
     runtime.loading = !runtime.player_entries.is_empty();
+    let collecting = started.map(|_| std::time::Instant::now());
     collect_heap(world);
+    if let (Some(started), Some(collecting)) = (started, collecting) {
+        let run_ns = (collecting - started).as_nanos() as u64;
+        let heap_ns = collecting.elapsed().as_nanos() as u64;
+        let threads = world.query::<&Thread>().iter(world).count();
+        let runtime = world.resource::<Runtime>();
+        usage::tick(now, run_ns, heap_ns, || usage::Census {
+            threads,
+            waiters: runtime.waiters.len(),
+            objects: runtime.objects.len(),
+            arrays: runtime.arrays.len(),
+            queued: runtime.buckets.values().map(VecDeque::len).sum(),
+            errors: runtime.errors.values().sum(),
+        });
+    }
 }
 
 fn run_ready(world: &mut World, program: &Program, now: i64) {
@@ -1434,8 +1457,7 @@ fn run_ready(world: &mut World, program: &Program, now: i64) {
         let Some(entity) = find_thread(world, serial) else {
             continue;
         };
-        let receivers = entity_receivers(world, world.get::<Thread>(entity).unwrap());
-        if any_deleted(world, &receivers) {
+        if thread_doomed(world, serial) {
             kill(world, entity, serial);
             continue;
         }
@@ -1458,7 +1480,13 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
     while thread.state == ThreadState::Runnable {
         let frame = thread.frames.last().unwrap();
         let function = &program.functions[frame.function];
-        let Some((location, op)) = function.code.get(frame.pc).cloned() else {
+        // The location is only read on failure; cloning it (two strings) per
+        // instruction was most of the interpreter's own cost.
+        let Some((location, op)) = function
+            .code
+            .get(frame.pc)
+            .map(|(location, op)| (location, op.clone()))
+        else {
             world.resource_mut::<Runtime>().fault = Some(Fault::at(
                 &function.location,
                 "invalid IR: instruction position out of range",
@@ -1482,7 +1510,7 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
         if world.resource::<Runtime>().fault.is_some() {
             break;
         }
-        let mut fault = Fault::at(&location, message);
+        let mut fault = Fault::at(location, message);
         fault.callers = thread
             .frames
             .iter()
@@ -1515,7 +1543,7 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
         let base = thread.frames.last().map_or(0, |f| f.stack_base);
         let Some(kept) = before.checked_sub(pops).filter(|kept| *kept >= base) else {
             world.resource_mut::<Runtime>().fault =
-                Some(Fault::at(&location, "invalid IR: stack underflow"));
+                Some(Fault::at(location, "invalid IR: stack underflow"));
             break;
         };
         thread.stack.truncate(kept);
@@ -1526,7 +1554,7 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
             match allocate_array(world) {
                 Ok(empty) => *thread.stack.last_mut().unwrap() = empty,
                 Err(message) => {
-                    world.resource_mut::<Runtime>().fault = Some(Fault::at(&location, message));
+                    world.resource_mut::<Runtime>().fault = Some(Fault::at(location, message));
                     break;
                 }
             }
@@ -1703,23 +1731,28 @@ fn copy_value(world: &mut World, value: Value) -> Result<Value, String> {
 }
 
 /// Deleting a waited-on object ends the thread; a thread whose self is deleted keeps running.
-fn entity_receivers(world: &World, thread: &Thread) -> Vec<Value> {
-    world
-        .resource::<Runtime>()
-        .waiters
-        .iter()
-        .filter(|w| w.thread == thread.serial)
-        .map(|w| &w.receiver)
-        .filter(|value| matches!(value, Value::Object(_)))
-        .cloned()
-        .collect()
+fn waits_on_deleted(runtime: &Runtime, waiter: &Waiter) -> bool {
+    matches!(waiter.receiver, Value::Object(id) if runtime.dead.contains(&id) || !runtime.objects.contains_key(&id))
 }
 
-fn any_deleted(world: &World, receivers: &[Value]) -> bool {
+fn thread_doomed(world: &World, serial: u64) -> bool {
     let runtime = world.resource::<Runtime>();
-    receivers.iter().any(|value| {
-        matches!(value, Value::Object(id) if runtime.dead.contains(id) || !runtime.objects.contains_key(id))
-    })
+    runtime
+        .waiters
+        .iter()
+        .any(|w| w.thread == serial && waits_on_deleted(runtime, w))
+}
+
+/// Every thread `thread_doomed` would end, in one pass over the wait list
+/// (asking per thread is threads × waiters).
+fn doomed_threads(world: &World) -> std::collections::BTreeSet<u64> {
+    let runtime = world.resource::<Runtime>();
+    runtime
+        .waiters
+        .iter()
+        .filter(|w| waits_on_deleted(runtime, w))
+        .map(|w| w.thread)
+        .collect()
 }
 
 impl Runtime {
@@ -1762,48 +1795,85 @@ impl Runtime {
     }
 }
 
+/// Mark and sweep over reference ids. Values are not cloned while marking:
+/// copying every reachable value (and bumping its strings) every tick was
+/// most of the collector's cost.
 fn collect_heap(world: &mut World) {
-    let mut pending = vec![Value::Object(0), Value::Object(1), Value::Object(2)];
+    use std::collections::HashSet;
+    use std::hash::{BuildHasherDefault, Hasher};
+    /// Object ids are sequential integers; one multiply spreads them.
+    #[derive(Default)]
+    struct IdHasher(u64);
+    impl Hasher for IdHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.write_u64(self.0 ^ u64::from(*byte));
+            }
+        }
+        fn write_u64(&mut self, n: u64) {
+            self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    type IdSet = HashSet<u64, BuildHasherDefault<IdHasher>>;
+    fn reference(value: &Value) -> Option<(bool, u64)> {
+        match value {
+            Value::Object(id) => Some((true, *id)),
+            Value::Array(id) => Some((false, *id)),
+            _ => None,
+        }
+    }
+    let mut pending = vec![(true, 0), (true, 1), (true, 2)];
     pending.extend(
         world
             .resource::<Runtime>()
             .entities
             .keys()
-            .map(|id| Value::Object(*id)),
+            .map(|id| (true, *id)),
     );
     for thread in world.query::<&Thread>().iter(world) {
-        pending.extend(thread.stack.iter().cloned());
+        pending.extend(thread.stack.iter().filter_map(reference));
         for frame in &thread.frames {
-            pending.push(frame.receiver.clone());
-            pending.extend(frame.locals.iter().cloned());
+            pending.extend(reference(&frame.receiver));
+            pending.extend(frame.locals.iter().filter_map(reference));
         }
     }
-    let mut objects = std::collections::BTreeSet::new();
-    let mut arrays = std::collections::BTreeSet::new();
     let mut runtime = world.resource_mut::<Runtime>();
-    runtime.native_roots(&mut pending);
+    let mut roots = Vec::new();
+    runtime.native_roots(&mut roots);
+    pending.extend(roots.iter().filter_map(reference));
     for waiter in &runtime.waiters {
-        pending.push(waiter.receiver.clone());
+        pending.extend(reference(&waiter.receiver));
         if let WaiterKind::Match { values } = &waiter.kind {
-            pending.extend(values.iter().cloned());
+            pending.extend(values.iter().filter_map(reference));
         }
     }
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::Object(id) if objects.insert(id) => {
-                if let Some(fields) = runtime.objects.get(&id) {
-                    pending.extend(fields.values().cloned());
-                }
+    let mut objects = IdSet::with_capacity_and_hasher(runtime.objects.len(), Default::default());
+    let mut arrays = IdSet::with_capacity_and_hasher(runtime.arrays.len(), Default::default());
+    // Marked ids that are present; a sweep with nothing to remove is skipped.
+    let (mut live_objects, mut live_arrays) = (0, 0);
+    while let Some((object, id)) = pending.pop() {
+        if object {
+            if objects.insert(id)
+                && let Some(fields) = runtime.objects.get(&id)
+            {
+                live_objects += 1;
+                pending.extend(fields.values().filter_map(reference));
             }
-            Value::Array(id) if arrays.insert(id) => {
-                if let Some(values) = runtime.arrays.get(&id) {
-                    pending.extend(values.values().cloned());
-                }
-            }
-            _ => {}
+        } else if arrays.insert(id)
+            && let Some(values) = runtime.arrays.get(&id)
+        {
+            live_arrays += 1;
+            pending.extend(values.values().filter_map(reference));
         }
     }
-    runtime.objects.retain(|id, _| objects.contains(id));
+    if live_objects < runtime.objects.len() {
+        runtime.objects.retain(|id, _| objects.contains(id));
+    }
     runtime.dead.retain(|id| objects.contains(id));
-    runtime.arrays.retain(|id, _| arrays.contains(id));
+    if live_arrays < runtime.arrays.len() {
+        runtime.arrays.retain(|id, _| arrays.contains(id));
+    }
 }

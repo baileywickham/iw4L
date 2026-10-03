@@ -89,6 +89,8 @@ pub struct ProjectileState {
     pub id: ProjectileId,
     pub owner: ClientId,
     pub owner_life: LifeSequence,
+    /// An actor's projectile: `owner` is then `NO_OWNER` and damage names this entity.
+    pub owner_entity: Option<crate::ScriptModelId>,
     pub weapon: u32,
     pub origin: [f32; 3],
     pub velocity: [f32; 3],
@@ -107,7 +109,17 @@ pub struct ProjectileState {
     pub attached_to: Option<crate::MissileTarget>,
 }
 
+/// `owner` of a projectile no client launched.
+pub const NO_OWNER: ClientId = ClientId(u32::MAX);
+
 impl ProjectileState {
+    pub fn attacker(&self) -> crate::Attacker {
+        match self.owner_entity {
+            Some(entity) => crate::Attacker::Entity(entity),
+            None => crate::Attacker::Client(self.owner),
+        }
+    }
+
     pub fn origin_at(&self, at_time_ms: i32) -> [f32; 3] {
         evaluate_trajectory(&self.pos, at_time_ms)
     }
@@ -331,6 +343,7 @@ pub(crate) fn spawn_grenade_projectile(
         id: id_projectile,
         owner,
         owner_life,
+        owner_entity: None,
         weapon,
         origin,
         velocity: pos.tr_delta,
@@ -349,6 +362,72 @@ pub(crate) fn spawn_grenade_projectile(
         attached_to: None,
     });
     true
+}
+
+/// A grenade an actor throws (or script drops): launched with the velocity the
+/// toss solution chose, fused from now.
+pub(crate) fn spawn_entity_grenade(
+    world: &mut FrameWorld,
+    owner: crate::ScriptModelId,
+    weapon: u32,
+    tick: Tick,
+    origin: [f32; 3],
+    velocity: [f32; 3],
+    fuse_ms: Option<i32>,
+) -> Option<ProjectileState> {
+    let facts = world.equipment_facts_for(weapon)?;
+    if !facts.is_usable() {
+        return None;
+    }
+    let time_ms = level_time_ms(tick);
+    let direction = vec3_normalize(velocity).unwrap_or([1.0, 0.0, 0.0]);
+    let (pitch_rate, roll_rate) = if facts.projectile_rotates {
+        grenade_spin_rates(world)
+    } else {
+        (0.0, 0.0)
+    };
+    let apos = if pitch_rate == 0.0 && roll_rate == 0.0 {
+        fire_missile_apos(direction)
+    } else {
+        init_grenade_apos(direction, time_ms, pitch_rate, roll_rate)
+    };
+    let pos = init_grenade_pos(origin, velocity, time_ms);
+    let kind = GrenadeLaunchKind::Thrown {
+        remaining_fuse_ms: fuse_ms,
+    };
+    let (detonate_at_ms, cleanup_at_ms) = grenade_deadlines(&facts, kind, time_ms);
+    let id = world.allocate_projectile_id();
+    let entnum = match world.allocate_dynamic_entity(crate::gentity::EntityRunKind::Missile) {
+        Ok(entity) => entity.number(),
+        Err(error) => {
+            diag::warn!(Sim, "grenade not spawned: {error:?}");
+            return None;
+        }
+    };
+    let projectile = ProjectileState {
+        id,
+        owner: NO_OWNER,
+        owner_life: LifeSequence::default(),
+        owner_entity: Some(owner),
+        weapon,
+        origin,
+        velocity: pos.tr_delta,
+        pos,
+        apos,
+        entnum,
+        launch_time: time_ms + fire_grenade_no_draw_ms(vec3_length(velocity)),
+        spawn_time_ms: time_ms,
+        detonate_at_ms,
+        cleanup_at_ms,
+        travel_distance: 0.0,
+        live: true,
+        stuck_pane: None,
+        grounded: false,
+        guide: crate::MissileGuide::default(),
+        attached_to: None,
+    };
+    world.push_projectile(projectile);
+    Some(projectile)
 }
 
 pub(crate) fn spawn_offhand_projectile(
@@ -551,7 +630,7 @@ pub(crate) fn predict_projectile(
                 mask: MASK_BULLET_WORLD,
                 ignore: Some(projectile.owner),
                 ignore_hit: None,
-                ignore_model: None,
+                ignore_model: projectile.owner_entity,
             },
             &|piece| world.world_objects().glass_is_solid(u32::from(piece)),
         ) {
@@ -721,7 +800,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                 mask: MASK_BULLET_WORLD,
                 ignore: Some(projectile.owner),
                 ignore_hit: None,
-                ignore_model: None,
+                ignore_model: projectile.owner_entity,
             },
             &|piece| {
                 crate::world_objects::glass_piece_is_solid(
@@ -860,7 +939,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                 mask: MASK_BULLET_WORLD,
                 ignore: Some(projectile.owner),
                 ignore_hit: None,
-                ignore_model: None,
+                ignore_model: projectile.owner_entity,
             },
             &|piece| world.world_objects().glass_is_solid(u32::from(piece)),
         ) {
@@ -966,7 +1045,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                                 crate::script::EntityHit {
                                     target,
                                     amount: facts.impact_damage.max(0),
-                                    attacker: Some(crate::Attacker::Client(projectile.owner)),
+                                    attacker: Some(projectile.attacker()),
                                     means: "",
                                     weapon: projectile.weapon,
                                     point: end,
@@ -1122,7 +1201,7 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                                 crate::script::EntityHit {
                                     target,
                                     amount: facts.impact_damage.max(0),
-                                    attacker: Some(crate::Attacker::Client(projectile.owner)),
+                                    attacker: Some(projectile.attacker()),
                                     means: "",
                                     weapon: projectile.weapon,
                                     point: end,
@@ -1333,6 +1412,9 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
     let resolves_damage = world.publishes_snapshot();
     if resolves_damage {
         for (projectile, target) in direct_hits {
+            if projectile.owner_entity.is_some() {
+                continue;
+            }
             let facts = required_projectile_facts(world, projectile.weapon);
             let Some(target_meta) = world.client_meta(target) else {
                 continue;
@@ -1378,13 +1460,17 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
         } else {
             entity_iw4::EntityEventKind::GRENADE_EXPLODE
         };
+        let attacker_entity_num = match info.projectile.owner_entity {
+            Some(entity) => world.gentity_number(entity).unwrap_or(-1),
+            None => info.projectile.owner.0 as i32,
+        };
         world.push_entity_event(
             tick,
             EventAudience::All,
             event_kind,
             crate::EntityEventPayload {
                 number: info.projectile.entnum,
-                attacker_entity_num: info.projectile.owner.0 as i32,
+                attacker_entity_num,
                 weapon: info.projectile.weapon,
                 correlation: info.projectile.id.0,
                 origin: info.origin,
@@ -1394,6 +1480,40 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
             },
         );
         if !resolves_damage {
+            continue;
+        }
+        if let Some(entity) = info.projectile.owner_entity {
+            let radius = facts
+                .explosion_radius
+                .max(facts.explosion_radius_min)
+                .max(0) as f32;
+            let means = crate::script_player::means(
+                world,
+                DamageSource::Projectile(info.projectile.id),
+                info.projectile.weapon,
+                0,
+                true,
+            );
+            diag::info!(
+                Sim,
+                "grenade: entity-owned projectile {} exploded at {:.0} {:.0} {:.0} radius={radius:.0}",
+                info.projectile.id.0,
+                info.origin[0],
+                info.origin[1],
+                info.origin[2]
+            );
+            if let Some(mut runtime) = world.ecs().get_resource_mut::<crate::script::Runtime>() {
+                runtime.blasts.push(crate::script::ScriptBlast {
+                    origin: info.origin,
+                    radius,
+                    max: facts.explosion_inner_damage as f32,
+                    min: facts.explosion_outer_damage.max(0) as f32,
+                    attacker: Some(crate::Attacker::Entity(entity)),
+                    inflictor: None,
+                    means,
+                    weapon: info.projectile.weapon,
+                });
+            }
             continue;
         }
         if facts.projectile_explosion_type == 2 {

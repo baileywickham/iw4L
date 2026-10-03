@@ -895,6 +895,25 @@ fn register_entities(registry: &mut NativeRegistry) {
         let classname = string(args, 0)?;
         let origin = vector(args, 1)?;
         let flags = optional(args, 2, int)?.unwrap_or(0);
+        if let Some(name) = classname.strip_prefix("weapon_") {
+            let frame = crate::frame::FrameWorld::from_world(world);
+            let weapon = crate::script_player::weapon_named(&frame, name)
+                .map_err(|_| format!("unable to spawn \"{classname}\" entity"))?;
+            let tick = world.resource::<crate::step::StepRequest>().tick;
+            let number = crate::item::spawn_weapon_item(
+                &mut crate::frame::FrameWorld::from_world(world),
+                tick,
+                weapon,
+                origin,
+                0.0,
+                playerstate_iw4::ENTITYNUM_NONE,
+                false,
+            );
+            if number == playerstate_iw4::ENTITYNUM_NONE {
+                return Ok(Value::Undefined);
+            }
+            return super::player::new_item_entity(world, number, &classname);
+        }
         if !matches!(
             classname.as_str(),
             "script_origin"

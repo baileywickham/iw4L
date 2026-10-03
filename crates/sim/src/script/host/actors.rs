@@ -532,6 +532,7 @@ pub(crate) fn run_actors(world: &mut World) {
     super::presence::settle_collision(world);
     let live = live_actors(world);
     super::actor_combat::run(world, &live, now);
+    super::actor_grenade::run(world, &live, now);
     for (_, id, object) in live_actors(world) {
         super::actor_nav::think(world, id, object, now, &mut budget);
     }

@@ -139,6 +139,14 @@ fn heli<'a>(world: &'a mut World, receiver: &Value) -> Result<&'a mut Heli, Stri
         .ok_or_else(|| "receiver is not a vehicle".into())
 }
 
+fn parked_vehicle(world: &World, receiver: &Value) -> bool {
+    matches!(receiver, Value::Object(id) if world
+        .resource::<Runtime>()
+        .entities
+        .get(id)
+        .is_some_and(|entity| entity.classname.starts_with("script_vehicle")))
+}
+
 pub(crate) fn is_heli(world: &World, receiver: &Value) -> bool {
     matches!(receiver, Value::Object(id) if world.resource::<Runtime>().vehicles.contains_key(id))
 }
@@ -628,6 +636,12 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         },
     );
     registry.register(Method, "vehicle_getspeed", |world, receiver, _| {
+        // A placed `script_vehicle` nothing drives is parked. SP `_vehicle`
+        // polls this every frame per vehicle; an error there cost three
+        // runtime faults a poll and never let the loop see a stop.
+        if !is_heli(world, receiver) && parked_vehicle(world, receiver) {
+            return Ok(Value::Float(0.0));
+        }
         Ok(Value::Float(heli(world, receiver)?.speed / MPH))
     });
     registry.register(Method, "setyawspeed", |world, receiver, args| {

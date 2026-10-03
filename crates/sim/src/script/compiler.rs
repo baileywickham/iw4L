@@ -438,7 +438,7 @@ pub(super) fn compile(
         names,
         modules,
         symbols: tables.symbols,
-        symbol_ids: tables.symbol_ids,
+        symbol_ids: tables.symbol_ids.into_iter().collect(),
         natives,
         rules: catalog.realm(),
         stub_natives: catalog.stub_natives(),

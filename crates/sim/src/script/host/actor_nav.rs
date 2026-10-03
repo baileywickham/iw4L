@@ -6,7 +6,7 @@ use super::actors::{actor_of, run_script};
 use super::args::{arg, float, string, vector};
 use super::natives::engine::{entity_id, path_node_object};
 use crate::actor::path::{self, ActorPath, NEAREST_NODE_DIST, PathSearch, SearchStep};
-use crate::actor::{Actor, ActorId, ActorPool, MoveMode, Orient};
+use crate::actor::{Actor, ActorId, ActorPool, DetourKind, MoveMode, Orient};
 use crate::frame::FrameWorld;
 use crate::script::runtime::{raise, thread_running};
 use crate::script::{Arc, Namespace, NativeRegistry, Runtime, Value};
@@ -14,6 +14,8 @@ use bevy_ecs::prelude::World;
 
 /// A* expansions all actors share per tick; a search left over resumes next tick.
 pub(crate) const EXPANSION_BUDGET: u32 = 4096;
+/// A* expansions one script path request may spend.
+const SCRIPT_PATH_BUDGET: u32 = 4096;
 /// `pathWaitTime` after a failed search (`Actor_HandleInvalidPath`).
 const BAD_PATH_WAIT_MS: i64 = 500;
 const RUN_SPEED: f32 = 180.0;
@@ -76,7 +78,7 @@ fn with_actor<T>(world: &mut World, id: ActorId, f: impl FnOnce(&mut Actor) -> T
     world.resource_mut::<ActorPool>().actors.get_mut(&id).map(f)
 }
 
-fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), String> {
+pub(crate) fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), String> {
     match receiver {
         Value::Object(object) => actor_of(world, *object)
             .map(|id| (id, *object))
@@ -85,7 +87,7 @@ fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), Str
     }
 }
 
-fn node_index(world: &World, value: &Value) -> Result<u16, String> {
+pub(crate) fn node_index(world: &World, value: &Value) -> Result<u16, String> {
     let Value::Object(object) = value else {
         return Err(format!("{} is not a path node", super::args::kind(value)));
     };
@@ -103,7 +105,7 @@ pub(crate) fn node_value(world: &mut World, node: Option<u16>) -> Value {
         .unwrap_or(Value::Undefined)
 }
 
-fn hull_clear(frame: &FrameWorld, from: [f32; 3], to: [f32; 3]) -> bool {
+pub(crate) fn hull_clear(frame: &FrameWorld, from: [f32; 3], to: [f32; 3]) -> bool {
     let mins = [ACTOR_MINS[0], ACTOR_MINS[1], STEP_HEIGHT];
     let maxs = [ACTOR_MAXS[0], ACTOR_MAXS[1], 48.0];
     let t = frame.trace_world(from, to, mins, maxs, MASK_ACTOR_SOLID);
@@ -111,7 +113,7 @@ fn hull_clear(frame: &FrameWorld, from: [f32; 3], to: [f32; 3]) -> bool {
 }
 
 /// `Path_NearestNode`: the closest linked node within reach that the actor hull can see.
-fn nearest_node(frame: &FrameWorld, at: [f32; 3]) -> Option<u16> {
+pub(crate) fn nearest_node(frame: &FrameWorld, at: [f32; 3]) -> Option<u16> {
     let graph = frame.path_graph();
     let mins = [ACTOR_MINS[0], ACTOR_MINS[1], ACTOR_MINS[2] + 17.0];
     for radius in [NEAREST_NODE_DIST, NEAREST_NODE_DIST * 3.0] {
@@ -160,7 +162,7 @@ fn in_volume(world: &mut World, volume: Option<u64>, point: [f32; 3]) -> bool {
     })
 }
 
-fn point_at_goal(world: &mut World, id: ActorId, point: [f32; 3]) -> bool {
+pub(crate) fn point_at_goal(world: &mut World, id: ActorId, point: [f32; 3]) -> bool {
     let Some((cylinder, volume)) =
         actor(world, id).map(|a| (a.point_in_goal_cylinder(point), a.goal.volume))
     else {
@@ -182,7 +184,7 @@ fn release_claim(world: &mut World, id: ActorId) {
     }
 }
 
-fn claim(world: &mut World, id: ActorId, node: u16) {
+pub(crate) fn claim(world: &mut World, id: ActorId, node: u16) {
     if actor(world, id).and_then(|a| a.claimed) == Some(node) {
         return;
     }
@@ -209,7 +211,7 @@ pub(crate) fn release_all(world: &mut World, id: ActorId) {
         .retain(|_, owner| *owner != id);
 }
 
-fn clear_path(world: &mut World, id: ActorId) {
+pub(crate) fn clear_path(world: &mut World, id: ActorId) {
     with_actor(world, id, |a| {
         a.path = None;
         a.search = None;
@@ -352,6 +354,51 @@ fn continue_search(world: &mut World, id: ActorId, object: u64, now: i64, budget
             with_actor(world, id, |a| a.path = Some(path));
         }
     }
+}
+
+/// A path found now, for script moves (reacquire, `usecovernode`): a direct line
+/// when it is short and clear, else A* with its own expansion budget.
+pub(crate) fn path_now(world: &mut World, id: ActorId, object: u64, target: [f32; 3]) -> bool {
+    let at = origin(world, object);
+    let content = FrameWorld::from_world(world).content();
+    let graph = content.path_graph();
+    let path = {
+        let frame = FrameWorld::from_world(world);
+        let lifted = |p: [f32; 3]| add(p, [0.0, 0.0, 1.0]);
+        if length(sub(target, at)) < DIRECT_PATH_DIST
+            && (target[2] - at[2]).abs() < 48.0
+            && hull_clear(&frame, lifted(at), lifted(target))
+        {
+            Some(ActorPath::direct(target))
+        } else {
+            match (nearest_node(&frame, at), nearest_node(&frame, target)) {
+                (Some(from), Some(to)) => {
+                    let mut budget = SCRIPT_PATH_BUDGET;
+                    match PathSearch::new(graph, from, to).run(graph, &mut budget) {
+                        SearchStep::Found(nodes) => Some(ActorPath::through(graph, &nodes, target)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+    };
+    let found = path.is_some();
+    if let Some(path) = path {
+        with_actor(world, id, |a| {
+            a.path = Some(path);
+            a.search = None;
+        });
+    }
+    found
+}
+
+/// A straight path to a point the caller already checked is clear.
+pub(crate) fn set_direct_path(world: &mut World, id: ActorId, to: [f32; 3]) {
+    with_actor(world, id, |a| {
+        a.path = Some(ActorPath::direct(to));
+        a.search = None;
+    });
 }
 
 fn floor_snap(frame: &FrameWorld, at: [f32; 3]) -> Option<f32> {
@@ -499,10 +546,16 @@ fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
 }
 
 /// Animscripts that run to their end before the state picks again.
-const STICKY_ANIMSCRIPTS: [&str; 2] = ["pain", "death"];
+const STICKY_ANIMSCRIPTS: [&str; 5] = [
+    "pain",
+    "death",
+    "cover_arrival",
+    "grenade_cower",
+    "grenade_return_throw",
+];
 
-/// The animscript the actor's state wants: `move` while it has a path, `combat`
-/// with an enemy, else `stop`.
+/// The animscript the actor's state wants: `move` while it has a path, with an
+/// enemy its claimed cover node's script or `combat`, else `stop`.
 fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     let Some((current, started, moving, enemy)) = actor(world, id).map(|a| {
         (
@@ -514,16 +567,20 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     }) else {
         return;
     };
+    let threatened = actor(world, id)
+        .and_then(|a| a.grenade)
+        .is_some_and(|g| world.resource::<Runtime>().live(&g));
     if let Some((name, serial)) = &current
         && STICKY_ANIMSCRIPTS.contains(&&**name)
         && thread_running(world, *serial)
+        && (&**name != "grenade_cower" || threatened)
     {
         return;
     }
     let wanted: Arc<str> = if moving {
         "move".into()
     } else if enemy {
-        "combat".into()
+        super::actor_cover::combat_script(world, id, object).into()
     } else {
         "stop".into()
     };
@@ -532,6 +589,18 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
         && (thread_running(world, *serial) || now - started < super::actors::ANIMSCRIPT_RETRY_MS)
     {
         return;
+    }
+    if wanted.starts_with("cover_") && current.as_ref().is_none_or(|(name, _)| *name != wanted) {
+        let node = actor(world, id).and_then(|a| a.claimed);
+        let number = world
+            .resource::<Runtime>()
+            .entities
+            .get(&object)
+            .map_or(0, |e| e.number);
+        diag::info!(
+            Sim,
+            "actor: entity {number} at cover node {node:?} runs {wanted}"
+        );
     }
     switch_animscript(world, id, object, wanted, now);
 }
@@ -586,7 +655,8 @@ pub(crate) fn stop(world: &mut World, id: ActorId) {
     release_all(world, id);
 }
 
-/// One actor's think: goal, path, movement, facing, animscript, `"goal"`.
+/// One actor's think: goal, cover or detour, path, movement, facing,
+/// animscript, `"goal"`.
 pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budget: &mut u32) {
     let linked = world
         .resource::<Runtime>()
@@ -607,46 +677,24 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             with_actor(world, id, |a| a.goal.entity = None);
         }
     }
-    let target = if holds_to_fight(world, id, at) {
-        None
-    } else {
-        wanted_target(world, id, at)
-    };
-    match target {
-        None => {
-            if actor(world, id).is_some_and(|a| a.path.is_some() || a.search.is_some()) {
-                clear_path(world, id);
-            }
+    if arriving(world, id) {
+        let moved = super::actor_cover::arrival_step(world, id, at);
+        if moved != at {
+            world
+                .resource_mut::<super::mechanics::Mechanics>()
+                .stop(object, "origin");
+            world.resource_mut::<Runtime>().set_object_field(
+                object,
+                "origin",
+                Value::Vector(moved),
+            );
         }
-        Some((target, node)) => {
-            if let Some(node) = node {
-                claim(world, id, node);
-            }
-            let (current, searching, wait) = {
-                let a = actor(world, id).unwrap();
-                (
-                    a.path.as_ref().map(|p| p.final_goal),
-                    a.search.as_ref().map(|(_, t)| *t),
-                    a.path_wait_ms,
-                )
-            };
-            let stale = |end: Option<[f32; 3]>| end.is_none_or(|e| length(sub(e, target)) > 1.0);
-            let moving_goal = actor(world, id).is_some_and(|a| a.goal.entity.is_some());
-            let replan = if moving_goal {
-                current.is_some_and(|e| length(sub(e, target)) > 64.0)
-            } else {
-                stale(current)
-            };
-            if stale(current) && current.is_none() && stale(searching) && now >= wait {
-                begin_path(world, id, object, at, target, now);
-            } else if replan && current.is_some() && stale(searching) {
-                with_actor(world, id, |a| a.path = None);
-                if now >= wait {
-                    begin_path(world, id, object, at, target, now);
-                }
-            }
-            continue_search(world, id, object, now, budget);
-        }
+        return;
+    }
+    let detour = !detour_done(world, id, object, now);
+    if !detour {
+        let target = code_target(world, id, object, at, now);
+        follow_target(world, id, object, at, target, now, budget);
     }
     let anim_mode = actor(world, id).map(|a| a.anim_mode.clone());
     let moved = if anim_mode.is_some_and(|m| ANIM_DRIVEN.contains(&&*m)) {
@@ -662,6 +710,7 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             .resource_mut::<Runtime>()
             .set_object_field(object, "origin", Value::Vector(moved));
     }
+    super::actor_cover::approach_notify(world, id, object);
     face(world, id, object, moved);
     select_animscript(world, id, object, now);
     let at_goal = {
@@ -685,6 +734,152 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             );
         }
     }
+}
+
+/// `cover_arrival` is playing: the actor slides into its node until it ends.
+fn arriving(world: &mut World, id: ActorId) -> bool {
+    let Some((arrival, script)) = actor(world, id).map(|a| (a.arrival, a.animscript.clone()))
+    else {
+        return false;
+    };
+    if arrival.is_none() {
+        return false;
+    }
+    let running = script
+        .is_some_and(|(name, serial)| &*name == "cover_arrival" && thread_running(world, serial));
+    if !running {
+        with_actor(world, id, |a| a.arrival = None);
+    }
+    running
+}
+
+/// A detour (reacquire move, `setruntopos`) owns the path until it is walked;
+/// a reacquire ends early once the enemy is in view.
+fn detour_done(world: &mut World, id: ActorId, object: u64, now: i64) -> bool {
+    let Some((detour, has_path, seen)) = actor(world, id).map(|a| {
+        (
+            a.detour,
+            a.path.is_some(),
+            a.enemy
+                .and_then(|e| a.known.get(&e))
+                .and_then(|k| k.seen_ms)
+                .is_some_and(|t| now - t <= 300),
+        )
+    }) else {
+        return true;
+    };
+    let Some(detour) = detour else {
+        return true;
+    };
+    let reacquired = detour.kind == DetourKind::Reacquire && seen;
+    if has_path && !reacquired {
+        return false;
+    }
+    if reacquired {
+        clear_path(world, id);
+    }
+    with_actor(world, id, |a| a.detour = None);
+    if detour.kind == DetourKind::RunTo {
+        raise(world, Value::Object(object), "runto_arrived", Vec::new());
+    }
+    true
+}
+
+/// `Actor_FindPathToGoal`: with an enemy and no fixed node, the claimed cover node
+/// in the goal; otherwise the script goal.
+fn code_target(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    at: [f32; 3],
+    now: i64,
+) -> Option<([f32; 3], Option<u16>)> {
+    let (fixed, keep, enemy, human, claimed) = actor(world, id).map(|a| {
+        (
+            a.float_field("fixednode") != 0.0,
+            a.float_field("keepclaimednode") != 0.0,
+            a.enemy.is_some(),
+            &*a.species == "human",
+            a.claimed,
+        )
+    })?;
+    let cover = if keep {
+        claimed
+    } else if !fixed && enemy && human {
+        super::actor_cover::claimed_cover(world, id, object, now)
+    } else {
+        None
+    };
+    if let Some(n) = cover {
+        claim(world, id, n);
+        let node = FrameWorld::from_world(world).path_graph().nodes[n as usize].clone();
+        if super::actor_cover::near_node(at, &node) || enemy_in_fight_dist(world, id, at) {
+            return None;
+        }
+        return Some((node.origin, Some(n)));
+    }
+    if holds_to_fight(world, id, at) {
+        None
+    } else {
+        wanted_target(world, id, at)
+    }
+}
+
+fn follow_target(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    at: [f32; 3],
+    target: Option<([f32; 3], Option<u16>)>,
+    now: i64,
+    budget: &mut u32,
+) {
+    let Some((target, node)) = target else {
+        if actor(world, id).is_some_and(|a| a.path.is_some() || a.search.is_some()) {
+            clear_path(world, id);
+        }
+        return;
+    };
+    if let Some(node) = node {
+        claim(world, id, node);
+    }
+    let (current, searching, wait) = {
+        let a = actor(world, id).unwrap();
+        (
+            a.path.as_ref().map(|p| p.final_goal),
+            a.search.as_ref().map(|(_, t)| *t),
+            a.path_wait_ms,
+        )
+    };
+    let stale = |end: Option<[f32; 3]>| end.is_none_or(|e| length(sub(e, target)) > 1.0);
+    let moving_goal = actor(world, id).is_some_and(|a| a.goal.entity.is_some());
+    let replan = if moving_goal {
+        current.is_some_and(|e| length(sub(e, target)) > 64.0)
+    } else {
+        stale(current)
+    };
+    if stale(current) && current.is_none() && stale(searching) && now >= wait {
+        begin_path(world, id, object, at, target, now);
+    } else if replan && current.is_some() && stale(searching) {
+        with_actor(world, id, |a| a.path = None);
+        if now >= wait {
+            begin_path(world, id, object, at, target, now);
+        }
+    }
+    continue_search(world, id, object, now, budget);
+}
+
+/// `Actor_CheckStop`: an enemy seen within `pathenemyfightdist` stops the move.
+fn enemy_in_fight_dist(world: &mut World, id: ActorId, at: [f32; 3]) -> bool {
+    let now = i64::from(world.resource::<crate::step::StepRequest>().tick.0)
+        * i64::from(crate::MATCH_TICK_MS);
+    actor(world, id).is_some_and(|a| {
+        let Some(known) = a.enemy.and_then(|e| a.known.get(&e)) else {
+            return false;
+        };
+        known.seen_ms.is_some_and(|t| now - t <= 500)
+            && length(sub(known.pos, at)) <= a.float_field("pathenemyfightdist")
+    })
 }
 
 /// With a known enemy an actor stops pathing once inside its goal (a goal
@@ -968,7 +1163,13 @@ fn negotiation(world: &World, id: ActorId) -> Option<(u16, u16)> {
     ))
 }
 
-fn teleport(world: &mut World, id: ActorId, object: u64, pos: [f32; 3], angles: Option<&Value>) {
+pub(crate) fn teleport(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    pos: [f32; 3],
+    angles: Option<&Value>,
+) {
     world
         .resource_mut::<super::mechanics::Mechanics>()
         .stop(object, "origin");

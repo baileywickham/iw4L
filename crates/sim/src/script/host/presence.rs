@@ -108,46 +108,103 @@ pub(crate) fn settled(world: &mut World) -> FrameWorld<'_> {
     FrameWorld::from_world(world)
 }
 
+type Pose = ([f32; 3], [f32; 3], bool, bool);
+
+fn settle_row(row: &mut EntityCollisionCapabilities, (origin, angles, hidden, solid): Pose) {
+    row.hidden = hidden;
+    row.solid = solid;
+    let settled = row
+        .followed_pose
+        .is_some_and(|(at, facing)| near(at, origin) && near_angles(facing, angles));
+    if settled {
+        return;
+    }
+    row.followed_pose = Some((origin, angles));
+    if let Some(dobj) = row.dobj.as_mut() {
+        dobj.set_world_pose(origin, angles);
+    }
+    for brush in &mut row.linked_brushes {
+        brush.origin = origin;
+        brush.angles = angles;
+    }
+}
+
+fn entity_pose(
+    runtime: &Runtime,
+    id: u64,
+    entity: &super::entities::ScriptEntity,
+    fields: (u32, u32),
+) -> Option<(ScriptModelId, Pose)> {
+    let presence = entity.presence?;
+    let values = runtime.objects.get(&id);
+    let read = |field| match values.and_then(|values| values.get(&field)) {
+        Some(Value::Vector(v)) => *v,
+        _ => [0.0; 3],
+    };
+    Some((
+        presence,
+        (read(fields.0), read(fields.1), entity.hidden, entity.solid),
+    ))
+}
+
 /// Collision rows only. Networked mover state is left to `present`: posing a
 /// mover mid-tick would break its tick-to-tick velocity.
+///
+/// Native traces call this once per query, so it reads the two field ids
+/// once and keeps the rows in a sorted vector rather than a fresh map.
 pub(crate) fn settle_collision(world: &mut World) {
     let mut runtime = world.resource_mut::<Runtime>();
-    let placed: Vec<(u64, ScriptModelId, bool, bool)> = runtime
+    if runtime.entities.values().all(|e| e.presence.is_none()) {
+        return;
+    }
+    let origin_field = runtime.symbol("origin");
+    let angles_field = runtime.symbol("angles");
+    let mut wanted: Vec<(ScriptModelId, Pose)> = runtime
         .entities
         .iter()
-        .filter_map(|(id, e)| Some((*id, e.presence?, e.hidden, e.solid)))
+        .filter(|(_, entity)| entity.presence.is_some())
+        .filter_map(|(id, entity)| entity_pose(&runtime, *id, entity, (origin_field, angles_field)))
         .collect();
-    let wanted: BTreeMap<ScriptModelId, ([f32; 3], [f32; 3], bool, bool)> = placed
-        .into_iter()
-        .map(|(object, presence, hidden, solid)| {
-            let origin = vector(&mut runtime, object, "origin");
-            let angles = vector(&mut runtime, object, "angles");
-            (presence, (origin, angles, hidden, solid))
-        })
-        .collect();
+    // A later entity with the same presence wins, as a collected map would.
+    wanted.sort_by_key(|(presence, _)| *presence);
+    wanted.dedup_by(|later, earlier| {
+        let same = later.0 == earlier.0;
+        if same {
+            earlier.1 = later.1;
+        }
+        same
+    });
     let mut frame = FrameWorld::from_world(world);
     for row in frame.entity_collision_capabilities_mut() {
-        let Some(&(origin, angles, hidden, solid)) =
-            row.owner.script_model().and_then(|id| wanted.get(&id))
-        else {
-            continue;
-        };
-        row.hidden = hidden;
-        row.solid = solid;
-        let settled = row
-            .followed_pose
-            .is_some_and(|(at, facing)| near(at, origin) && near_angles(facing, angles));
-        if settled {
-            continue;
+        if let Some(at) = row
+            .owner
+            .script_model()
+            .and_then(|id| wanted.binary_search_by_key(&id, |(p, _)| *p).ok())
+        {
+            settle_row(row, wanted[at].1);
         }
-        row.followed_pose = Some((origin, angles));
-        if let Some(dobj) = row.dobj.as_mut() {
-            dobj.set_world_pose(origin, angles);
-        }
-        for brush in &mut row.linked_brushes {
-            brush.origin = origin;
-            brush.angles = angles;
-        }
+    }
+}
+
+/// `settle_collision` for one entity's row: a tag query only reads its own
+/// pose, and settling every row per query was the perception path's cost.
+fn settle_one(world: &mut World, object: u64) {
+    let mut runtime = world.resource_mut::<Runtime>();
+    let fields = (runtime.symbol("origin"), runtime.symbol("angles"));
+    let Some((presence, pose)) = runtime
+        .entities
+        .get(&object)
+        .and_then(|entity| entity_pose(&runtime, object, entity, fields))
+    else {
+        return;
+    };
+    let mut frame = FrameWorld::from_world(world);
+    if let Some(row) = frame
+        .entity_collision_capabilities_mut()
+        .iter_mut()
+        .find(|row| row.owner.script_model() == Some(presence))
+    {
+        settle_row(row, pose);
     }
 }
 
@@ -296,7 +353,8 @@ pub(crate) fn tag_world(
         .entities
         .get(&object)?
         .presence?;
-    let frame = settled(world);
+    settle_one(world, object);
+    let frame = FrameWorld::from_world(world);
     let matrix = frame
         .entity_collision_capabilities()
         .iter()

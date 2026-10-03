@@ -310,6 +310,40 @@ fn launch_dropped_from_ps(
     )
 }
 
+/// A weapon item from script: one an actor drops (`dropweapon`, falling from
+/// the hand tag) or a `spawn( "weapon_<name>" )` (in place); a full clip and one
+/// more in stock.
+pub(crate) fn spawn_weapon_item(
+    world: &mut FrameWorld,
+    tick: Tick,
+    weapon: u32,
+    origin: [f32; 3],
+    yaw: f32,
+    owner: i32,
+    falling: bool,
+) -> i32 {
+    let clip = world
+        .combat_facts_for(weapon)
+        .map_or(0, |f| f.clip_size.max(0));
+    let pos = Trajectory {
+        tr_type: if falling { TR_GRAVITY } else { TR_STATIONARY },
+        tr_time: crate::corpse::level_time_ms(tick),
+        tr_duration: 0,
+        tr_delta: [0.0; 3],
+        tr_base: origin,
+    };
+    let apos = Trajectory {
+        tr_type: TR_STATIONARY,
+        tr_time: 0,
+        tr_duration: 0,
+        tr_delta: [0.0; 3],
+        tr_base: [0.0, yaw, 0.0],
+    };
+    push_dropped_item(
+        world, weapon, origin, pos, apos, owner, clip, 0, clip, falling, false,
+    )
+}
+
 pub(crate) fn drop_weapon(
     world: &mut FrameWorld,
     tick: Tick,

@@ -50,10 +50,11 @@ pub(crate) enum MoveMode {
 }
 
 impl MoveMode {
+    /// Script only sees `stop`, `walk` and `run`; the last 200 ms walk in.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Stop => "stop",
-            Self::StopSoon => "stop_soon",
+            Self::StopSoon => "walk",
             Self::Walk => "walk",
             Self::Run => "run",
         }
@@ -116,6 +117,43 @@ pub(crate) struct Actor {
     pub dying: Option<Dying>,
     pub shots: u32,
     pub hits_taken: u32,
+    /// A path the code goal does not own: a reacquire move or `setruntopos`.
+    pub detour: Option<Detour>,
+    /// No full cover search before this time; the claimed node is still rechecked.
+    pub cover_search_ms: i64,
+    /// `findcovernode` results, best last, popped by `getcovernode`.
+    pub cover_list: Vec<u16>,
+    /// `startcoverarrival`: the actor plays `cover_arrival` into its claimed node.
+    pub arrival: Option<f32>,
+    /// The grenade the actor is reacting to (`grenade` field).
+    pub grenade: Option<u64>,
+    /// Grenades already judged, so one is reacted to once.
+    pub grenades_seen: Vec<u64>,
+    /// The last `checkgrenadethrow*` solution: launch position and velocity.
+    pub toss: Option<([f32; 3], [f32; 3])>,
+    /// A grenade picked up to throw back: its weapon and the fuse it had left.
+    pub picked_up: Option<(u32, i32)>,
+    /// `suppressionmeter`, fed by hostile bullets passing close.
+    pub suppression: f32,
+    /// Last hostile bullet that suppressed the actor at cover, and since when
+    /// it has been suppressed (`suppressionstarttime`).
+    pub suppressed_ms: i64,
+    pub suppressed_since: i64,
+    pub pains: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DetourKind {
+    Reacquire,
+    RunTo,
+    /// Out of a grenade's blast.
+    Flee,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Detour {
+    pub pos: [f32; 3],
+    pub kind: DetourKind,
 }
 
 pub(crate) const STANCE_STAND: u8 = 1;
@@ -159,6 +197,18 @@ impl Actor {
             dying: None,
             shots: 0,
             hits_taken: 0,
+            detour: None,
+            cover_search_ms: 0,
+            cover_list: Vec::new(),
+            arrival: None,
+            grenade: None,
+            grenades_seen: Vec::new(),
+            toss: None,
+            picked_up: None,
+            suppression: 0.0,
+            suppressed_ms: 0,
+            suppressed_since: 0,
+            pains: 0,
         }
     }
 
@@ -199,6 +249,12 @@ pub(crate) struct ActorPool {
     pub draws: u64,
     /// Entities made sentient by script (`makeentitysentient`) and their team.
     pub sentients: BTreeMap<u64, Arc<str>>,
+    /// A sentient's nearest path node and when it was found (cover visibility).
+    pub sentient_nodes: BTreeMap<u64, (i64, Option<u16>)>,
+    /// Actor grenades thrown and pains played, for the run summary.
+    pub grenades_thrown: u32,
+    /// Bullet lines fired since the actors last looked (start, end, shooter).
+    pub whizzes: Vec<([f32; 3], [f32; 3], crate::Attacker)>,
 }
 
 impl ActorPool {

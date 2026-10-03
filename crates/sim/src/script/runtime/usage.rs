@@ -85,3 +85,62 @@ pub fn report() {
     histogram("field_reads", &usage.reads, usize::MAX);
     histogram("field_writes", &usage.writes, usize::MAX);
 }
+
+static STATS: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("IW4L_GSC_STATS").is_ok_and(|value| value == "1"));
+
+/// `IW4L_GSC_STATS=1`: every 200 authority ticks, logs where the scheduler
+/// spent its time and how large the script heap and wait lists are.
+pub(crate) fn stats_enabled() -> bool {
+    *STATS
+}
+
+#[derive(Default)]
+struct Window {
+    ticks: u32,
+    run_ns: u64,
+    heap_ns: u64,
+    max_ns: u64,
+}
+
+static WINDOW: LazyLock<Mutex<Window>> = LazyLock::new(Mutex::default);
+
+pub(crate) struct Census {
+    pub(crate) threads: usize,
+    pub(crate) waiters: usize,
+    pub(crate) objects: usize,
+    pub(crate) arrays: usize,
+    pub(crate) queued: usize,
+    pub(crate) errors: u64,
+}
+
+pub(crate) fn tick(now: i64, run_ns: u64, heap_ns: u64, census: impl FnOnce() -> Census) {
+    let Ok(mut window) = WINDOW.lock() else {
+        return;
+    };
+    window.ticks += 1;
+    window.run_ns += run_ns;
+    window.heap_ns += heap_ns;
+    window.max_ns = window.max_ns.max(run_ns + heap_ns);
+    if window.ticks < 200 {
+        return;
+    }
+    let ticks = f64::from(window.ticks);
+    let c = census();
+    diag::info!(
+        Sim,
+        "gsc stats: t={:.1}s ticks={} run_ms={:.3} heap_ms={:.3} max_ms={:.3} threads={} waiters={} queued={} objects={} arrays={} errors={}",
+        now as f64 / 1000.0,
+        window.ticks,
+        window.run_ns as f64 / ticks / 1e6,
+        window.heap_ns as f64 / ticks / 1e6,
+        window.max_ns as f64 / 1e6,
+        c.threads,
+        c.waiters,
+        c.queued,
+        c.objects,
+        c.arrays,
+        c.errors,
+    );
+    *window = Window::default();
+}

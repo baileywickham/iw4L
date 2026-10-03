@@ -1,4 +1,6 @@
 pub(crate) mod actor_combat;
+pub(crate) mod actor_cover;
+pub(crate) mod actor_grenade;
 pub(crate) mod actor_nav;
 pub(crate) mod actors;
 pub(crate) mod anim;

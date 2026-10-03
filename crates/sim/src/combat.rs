@@ -1296,6 +1296,13 @@ pub(crate) fn phase_trace(
         if segments.is_empty() {
             continue;
         }
+        if world.publishes_snapshot()
+            && let Some(last) = segments.last()
+            && let Some(mut pool) = world.ecs().get_resource_mut::<crate::actor::ActorPool>()
+            && !pool.actors.is_empty()
+        {
+            pool.whizzes.push((em.origin, last.end, em.attacker));
+        }
         let mut glass_hit: Vec<u32> = Vec::new();
         for segment in &segments {
             let exit = segment.surface_flags & fx_iw4::FX_IMPACT_EXIT_SURFACE_FLAG != 0;
@@ -1561,6 +1568,15 @@ fn fire_weapon_melee(
     let width = PLAYER_MELEE_WIDTH_DEFAULT;
     let height = PLAYER_MELEE_HEIGHT_DEFAULT;
     let query = world.lagcomp_query_for(attacker, tick);
+    let entity_rows: Vec<_> = if query.entities.rows.is_empty() {
+        world
+            .entity_collision_capabilities()
+            .iter()
+            .map(crate::EntityCollisionCapabilities::trace_geom)
+            .collect()
+    } else {
+        query.entities.rows.clone()
+    };
     let glass_pairs = world.world_objects().glass_damage_pairs();
     let is_solid = |piece| {
         crate::world_objects::glass_piece_is_solid(
@@ -1582,7 +1598,7 @@ fn fire_weapon_melee(
             world.clip_cmodels(),
             world.clip_mesh(),
             &query.players.poses,
-            &query.entities.rows,
+            &entity_rows,
             &BulletTraceQuery {
                 start: origin,
                 end,
@@ -1719,6 +1735,29 @@ fn fire_weapon_melee(
                     &mut || crate::item::random_unit(&mut holdrand),
                 );
                 *world.stuck_holdrand_mut() = holdrand;
+            }
+        }
+        Some(
+            ColliderId::EntityDObjBone { owner, .. } | ColliderId::EntityLinkedBrush { owner, .. },
+        ) if world.publishes_snapshot() => {
+            if let Some(target) = owner.script_model() {
+                crate::script::damage_entity(
+                    world.ecs(),
+                    &crate::script::EntityHit {
+                        target,
+                        amount,
+                        attacker: Some(crate::Attacker::Client(attacker)),
+                        means: "MOD_MELEE",
+                        weapon,
+                        point: segment.end,
+                        dir: forward,
+                        bone: match segment.collider {
+                            Some(ColliderId::EntityDObjBone { bone, .. }) => Some(usize::from(bone)),
+                            _ => None,
+                        },
+                        flags: 0,
+                    },
+                );
             }
         }
         _ => {}

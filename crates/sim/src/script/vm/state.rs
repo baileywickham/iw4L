@@ -10,6 +10,9 @@ pub(crate) struct Frame {
     pub(crate) stack_base: usize,
     pub(crate) receiver: Value,
     pub(crate) locals: Vec<Value>,
+    /// This frame registered an endon. Returning from a frame that never did
+    /// skips the scan of every waiter in the runtime.
+    pub(crate) endons: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

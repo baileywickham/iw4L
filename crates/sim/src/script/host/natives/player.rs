@@ -308,6 +308,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         registry.register(Method, name, |world, receiver, args| {
             let client = player(world, receiver)?;
             let menu: Arc<str> = string(args, 0)?.to_ascii_lowercase().into();
+            if menu.contains("eog_summary") {
+                super::sp::eog_summary(world, &menu);
+            }
             if let Some(cs_index) = hud_iw4::script_menu_cs_index(&menu) {
                 FrameWorld::from_world(world).push_player_card_open(ClientId(client), cs_index);
             } else {

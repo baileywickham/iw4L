@@ -66,6 +66,8 @@ impl Default for NativeRegistry {
         super::actor_nav::register(&mut registry);
         super::sentients::register(&mut registry);
         super::actor_combat::register(&mut registry);
+        super::actor_cover::register(&mut registry);
+        super::actor_grenade::register(&mut registry);
         registry
     }
 }

@@ -44,7 +44,9 @@ pub struct Program {
     pub(crate) names: BTreeMap<String, usize>,
     pub(crate) modules: Vec<ModuleIdentity>,
     pub(crate) symbols: Vec<Arc<str>>,
-    pub(crate) symbol_ids: BTreeMap<Arc<str>, u32>,
+    /// Hashed: engine code looks fields up by name (`object_field`) many
+    /// thousands of times a tick. Only ever queried, never iterated.
+    pub(crate) symbol_ids: std::collections::HashMap<Arc<str>, u32>,
     pub(crate) natives: Vec<Builtin>,
     pub(crate) rules: Realm,
     pub(crate) impure_scripts: bool,
