@@ -973,7 +973,17 @@ fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
         return;
     };
     crate::script_player::spawn(world, tick, id, point.origin, point.angles, "playing");
-    let held = SPEC_OPS_DEFAULT_WEAPONS.iter().find_map(|name| {
+    let sp_catalog = world
+        .weapon_script_names()
+        .iter()
+        .skip(1)
+        .any(|name| !name.is_empty() && !name.ends_with("_mp"));
+    let defaults = if sp_catalog {
+        &[][..]
+    } else {
+        SPEC_OPS_DEFAULT_WEAPONS
+    };
+    let held = defaults.iter().find_map(|name| {
         let weapon = crate::script_player::weapon_named(world, name).ok()?;
         crate::script_player::give_weapon(world, id, weapon, false).ok()?;
         crate::script_player::give_max_ammo(world, id, weapon);
@@ -984,7 +994,7 @@ fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
     }
     diag::info!(
         Sim,
-        "spec ops: client={} spawned at {} [{:.1}, {:.1}, {:.1}] weapon={}",
+        "spec ops: client={} spawned at {} [{:.1}, {:.1}, {:.1}] weapon={}{}",
         id.0,
         point.classname,
         point.origin[0],
@@ -993,7 +1003,12 @@ fn spawn_spec_ops_player(world: &mut FrameWorld, tick: Tick, id: ClientId) {
         held.map_or_else(
             || "none".to_owned(),
             |w| crate::script_player::weapon_name(world, w)
-        )
+        ),
+        if sp_catalog {
+            " (SP weapons loaded; the mission script gives the loadout)"
+        } else {
+            ""
+        }
     );
 }
 

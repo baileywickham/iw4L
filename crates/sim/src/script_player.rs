@@ -442,8 +442,8 @@ pub(crate) fn weapon_named(world: &FrameWorld, name: &str) -> Result<u32, String
         .ok_or_else(|| format!("unknown weapon '{name}'"))
 }
 
-/// SP weapon files are not captured yet; a Spec Ops `m4_grunt` or `usp` resolves to the
-/// MP weapon of the same family (`m4_mp`, `usp_mp`).
+/// A Spec Ops name no SP zone defines resolves to the MP weapon of the same family
+/// (`m4_grunt` → `m4_mp`); SP zones' own weapons are found by name before this.
 fn sp_weapon_stand_in(world: &FrameWorld, name: &str) -> Option<u32> {
     if world.game_mode_kind() != gamemode_iw4::GameModeKind::SpecOps {
         return None;
@@ -455,10 +455,16 @@ fn sp_weapon_stand_in(world: &FrameWorld, name: &str) -> Option<u32> {
         "flash" => "flash_grenade",
         family => family,
     };
-    [format!("{name}_mp"), format!("{family}_mp"), format!("{renamed}_mp")]
+    let stand_in = [format!("{name}_mp"), format!("{family}_mp"), format!("{renamed}_mp")]
         .iter()
         .find_map(|candidate| world.weapon_index_by_script_name(candidate))
-        .filter(|&w| w != 0)
+        .filter(|&w| w != 0)?;
+    diag::warn!(
+        Sim,
+        "spec ops: no SP weapon `{name}` in the loaded zones; standing in `{}`",
+        world.weapon_script_name(stand_in)
+    );
+    Some(stand_in)
 }
 
 pub(crate) fn weapon_name(world: &FrameWorld, weapon: u32) -> String {
@@ -511,6 +517,14 @@ pub(crate) fn give_weapon(
     };
     seed_ps_ammo_tables(ps, weapon, &facts, clip, clip_alt, akimbo, stock);
     world.client_meta_mut(id).set_ammo(weapon, clip, stock);
+    if world.game_mode_kind() == gamemode_iw4::GameModeKind::SpecOps {
+        diag::info!(
+            Sim,
+            "spec ops: client={} given {} clip={clip} stock={stock}",
+            id.0,
+            weapon_name(world, weapon)
+        );
+    }
     Ok(())
 }
 

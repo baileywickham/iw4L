@@ -1309,26 +1309,31 @@ impl WeaponCatalog {
         let gun_xmodel = geometry
             .gun_xmodel_name
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let hand_xmodel = geometry
             .hand_xmodel_name
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let world_model = geometry
             .world_model_name
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let projectile_model = geometry
             .projectile_model_name
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let rocket_model = geometry
             .rocket_model_name
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let sz_xanims = geometry
@@ -4328,6 +4333,11 @@ fn read_script_string_map(
     out
 }
 
+/// A zone names an asset another zone carries with a leading comma (`,viewmodel_m4`).
+fn referenced_asset_name(name: &str) -> &str {
+    name.strip_prefix(',').unwrap_or(name)
+}
+
 fn read_sz_xanims(stream: &ZoneStream<'_>, arr: Ptr) -> [Option<String>; WEAPON_ANIM_SLOTS] {
     let mut out = [const { None }; WEAPON_ANIM_SLOTS];
     for (i, slot) in out.iter_mut().take(WEAPON_ANIM_COUNT).enumerate() {
@@ -4337,6 +4347,7 @@ fn read_sz_xanims(stream: &ZoneStream<'_>, arr: Ptr) -> [Option<String>; WEAPON_
         };
         *slot = name_ptr
             .and_then(|ptr| stream.cstr(ptr).ok())
+            .map(referenced_asset_name)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
     }
@@ -4912,6 +4923,7 @@ fn merge_body_facts(dst: &mut WeaponBodyFacts, src: WeaponBodyFacts) {
 #[derive(Clone, Debug)]
 struct WeaponRow {
     name: String,
+    bare_script_name: bool,
     alternate_weapon: Option<String>,
     impact_payload: Option<String>,
     alternate_index: u32,
@@ -5029,6 +5041,7 @@ impl Default for WeaponRow {
     fn default() -> Self {
         Self {
             name: String::new(),
+            bare_script_name: false,
             alternate_weapon: None,
             impact_payload: None,
             alternate_index: 0,
@@ -5306,6 +5319,43 @@ impl WeaponBuild {
         self.registry.item_groups.extend(other.registry.item_groups);
         self.registry.rebuild_name_maps();
         self.registry.revision = mint_weapon_revision();
+    }
+
+    /// Folds a single-player zone's weapons in, its rows taking over MP rows of the same
+    /// name in place (`usp` replaces `usp_mp`), and named in script without the `_mp`.
+    /// Zone-local FX slots are dropped: combat FX must already be stamped by name.
+    pub fn absorb_overriding(&mut self, other: Self) -> (Vec<String>, Vec<String>) {
+        let mut replaced = Vec::new();
+        let mut added = Vec::new();
+        for mut row in other.registry.rows.into_iter().skip(1) {
+            row.bare_script_name = true;
+            let slot = CombatFxSlots::default();
+            match self.registry.by_name.get(&row.name).copied() {
+                Some(id) if self.registry.rows[id as usize].namespace == row.namespace => {
+                    replaced.push(row.name.clone());
+                    self.registry.rows[id as usize] = row;
+                    if let Some(existing) = self.combat_slots.get_mut(id as usize) {
+                        *existing = slot;
+                    }
+                }
+                _ => {
+                    added.push(row.name.clone());
+                    self.combat_slots
+                        .resize(self.registry.rows.len(), CombatFxSlots::default());
+                    self.combat_slots.push(slot);
+                    self.registry.rows.push(row);
+                }
+            }
+        }
+        self.registry
+            .vehicle_turrets
+            .extend(other.registry.vehicle_turrets);
+        self.registry
+            .vehicle_compass
+            .extend(other.registry.vehicle_compass);
+        self.registry.rebuild_name_maps();
+        self.registry.revision = mint_weapon_revision();
+        (replaced, added)
     }
 
     pub fn resolve_combat_fx(&mut self, fx: &crate::FxCatalog, tracers: &crate::TracerCatalog) {
@@ -6045,6 +6095,7 @@ impl WeaponBuild {
             combat_slots.push(entry.combat_slots);
             rows.push(WeaponRow {
                 name,
+                bare_script_name: false,
                 alternate_weapon: entry.alternate_weapon,
                 impact_payload: entry.impact_payload,
                 alternate_index: 0,
@@ -7132,7 +7183,10 @@ impl WeaponRegistry {
     }
 
     pub fn script_name_of(&self, index: u32) -> String {
-        gsc_weapon_script_name(self.name_of(index))
+        match self.rows.get(index as usize) {
+            Some(row) if row.bare_script_name => row.name.clone(),
+            _ => gsc_weapon_script_name(self.name_of(index)),
+        }
     }
 
     pub fn world_models_table(&self) -> Vec<(String, Vec<String>)> {

@@ -122,6 +122,9 @@ impl ZoneLane for Iw4Lane {
         sink.map_xmodels.shared_surfaces = shared_surfaces;
         sink.set_capture_zone(asset_core::ZoneOwner::from_zone_path(path));
         sink.set_capture_ns(asset_core::AssetNamespace::Iw4);
+        sink.capture_weapons = path
+            .file_stem()
+            .is_some_and(|stem| !stem.to_string_lossy().starts_with("mp_"));
         sink.sound = Some(asset_audio::ZoneSoundCapture::for_map(
             path,
             asset_audio::ZoneGame::Iw4,
@@ -262,6 +265,28 @@ impl ZoneLane for Iw4Lane {
             None => "createart fog: RED missing maps/createart/<map>_art.gsc setExpFog".into(),
         });
         let mut fx = std::mem::take(&mut sink.fx);
+        let zone_weapons = if sink.capture_weapons {
+            let mut weapons = std::mem::take(&mut sink.weapons);
+            weapons.resolve_reticles(&materials);
+            weapons.resolve_combat_fx(&fx, &sink.tracers);
+            weapons.resolve_projectile_fx_edges(&fx);
+            let weapons = weapons.into_build();
+            let world_weapons = std::mem::take(&mut sink.world_weapons);
+            report.push(format!(
+                "map weapons: {} WeaponDefs, {} with gunXModel[0], {} with szXAnims[IDLE]; {} world gun models",
+                weapons.len(),
+                weapons.gun_xmodel_count(),
+                weapons.idle_anim_count(),
+                world_weapons.len(),
+            ));
+            super::ZoneWeapons {
+                weapons,
+                world_weapons,
+                ..Default::default()
+            }
+        } else {
+            super::ZoneWeapons::default()
+        };
         let fx_models = std::mem::take(&mut sink.fx_models);
         let mut impact_fx = sink.impact_fx.take_table();
         let mut map_xmodels = std::mem::take(&mut sink.map_xmodels);
@@ -464,6 +489,7 @@ impl ZoneLane for Iw4Lane {
                 bodies,
                 fpv_meshes,
                 xanims: map_xanims,
+                zone_weapons,
                 facts: crate::MapFacts {
                     compass,
                     script_sound,
@@ -707,6 +733,7 @@ impl ZoneLane for Iw4Lane {
                     bodies,
                     fpv_meshes,
                     xanims: map_xanims,
+                    zone_weapons,
                     facts: crate::MapFacts {
                         minimap_corners,
                         north_yaw,
@@ -753,6 +780,7 @@ impl ZoneLane for Iw4Lane {
                     bodies,
                     fpv_meshes,
                     xanims: map_xanims,
+                    zone_weapons,
                     facts: crate::MapFacts {
                         compass,
                         script_sound,
@@ -1263,6 +1291,7 @@ pub(crate) struct ScriptZoneWalk {
     pub addon_entities: Option<String>,
     pub addon_triggers: Vec<Vec<asset_world::MapTriggerHull>>,
     pub sound: Option<Result<asset_audio::SoundCatalog, String>>,
+    pub zone_weapons: super::ZoneWeapons,
     pub report: Vec<String>,
 }
 
@@ -1301,6 +1330,10 @@ pub(crate) fn walk_script_zone(
     ));
     sink.set_capture_zone(asset_core::ZoneOwner::intern(&zone_name));
     sink.set_capture_ns(asset_core::AssetNamespace::Iw4);
+    sink.weapons = Some(Box::new(super::sink::WeaponZoneCapture::new(
+        asset_core::ZoneOwner::intern(&zone_name),
+        asset_core::AssetNamespace::Iw4,
+    )));
     if with_sound {
         sink.sound = Some(asset_audio::ZoneSoundCapture::for_map(
             path,
@@ -1331,6 +1364,32 @@ pub(crate) fn walk_script_zone(
         walk.scripts.len(),
         walk.addon_entities.as_ref().map_or(0, String::len)
     ));
+    if let Some(capture) = sink.weapons.take() {
+        let super::sink::WeaponZoneCapture {
+            mut weapons,
+            fpv_meshes,
+            world_weapons,
+            xanims,
+            ..
+        } = *capture;
+        weapons.resolve_reticles(&sink.materials);
+        let weapons = weapons.into_build();
+        walk.report.push(format!(
+            "{zone_name}: {} WeaponDefs ({} with gunXModel[0]); {} view models, {} world gun models, {} clips",
+            weapons.len(),
+            weapons.gun_xmodel_count(),
+            fpv_meshes.len(),
+            world_weapons.len(),
+            xanims.len(),
+        ));
+        walk.zone_weapons = super::ZoneWeapons {
+            weapons,
+            world_weapons,
+            fpv_meshes,
+            xanims,
+            materials: Some(std::mem::take(&mut sink.materials)),
+        };
+    }
     walk
 }
 

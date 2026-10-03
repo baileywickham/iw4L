@@ -171,6 +171,9 @@ pub(crate) struct ZoneWalkSink {
     pub bodies: BodyMeshBuild,
     pub fpv_meshes: FpvMeshBuild,
     pub xanims: XAnimBuild,
+    pub weapons: WeaponCatalog,
+    pub world_weapons: WorldWeaponBuild,
+    pub capture_weapons: bool,
 
     pub xmodel_coll: asset_world::XModelCollCatalog,
 
@@ -281,6 +284,7 @@ impl ZoneWalkSink {
         self.xanims.set_capture_zone(zone);
         self.map_xmodels.set_capture_zone(zone);
         self.fpv_meshes.set_capture_zone(zone);
+        self.world_weapons.set_capture_zone(zone);
     }
 
     pub(crate) fn set_capture_ns(&mut self, ns: asset_core::AssetNamespace) {
@@ -290,6 +294,8 @@ impl ZoneWalkSink {
         self.tracers.set_capture_ns(ns);
         self.fx.set_capture_ns(ns);
         self.fx_models.set_capture_ns(ns);
+        self.weapons.set_capture_ns(ns);
+        self.world_weapons.set_capture_ns(ns);
     }
 }
 
@@ -1100,6 +1106,8 @@ impl AssetSink for ZoneWalkSink {
         self.bodies.set_strings(strings);
         self.fpv_meshes.set_strings(strings);
         self.xanims.set_strings(strings);
+        self.weapons.set_strings(strings);
+        self.world_weapons.set_strings(strings);
     }
 
     fn begin_assets(&mut self, count: usize) {
@@ -1153,7 +1161,13 @@ impl AssetLinkSink for ZoneWalkSink {
         if ty == AssetType::Tracer {
             self.tracers.note_loaded(slot, insert_slot);
         }
+        if self.capture_weapons && ty == AssetType::Weapon {
+            self.weapons.capture(stream);
+        }
         if ty == AssetType::XModel {
+            if self.capture_weapons {
+                self.world_weapons.capture(stream, &self.materials);
+            }
             self.map_xmodels.capture(
                 stream,
                 &self.materials,
@@ -1565,6 +1579,32 @@ pub(crate) struct MaterialPopulationSink {
     pub scripts: crate::ScriptSources,
 
     pub sound: Option<asset_audio::ZoneSoundCapture>,
+    pub weapons: Option<Box<WeaponZoneCapture>>,
+}
+
+#[derive(Default)]
+pub(crate) struct WeaponZoneCapture {
+    pub weapons: WeaponCatalog,
+    pub fpv_meshes: FpvMeshBuild,
+    pub world_weapons: WorldWeaponBuild,
+    pub xanims: XAnimBuild,
+    xmodel_names: HashMap<Ptr, Ptr>,
+    xmodel_surfaces: HashMap<Ptr, Ptr>,
+    xmodel_surface_names: HashMap<Ptr, Ptr>,
+}
+
+impl WeaponZoneCapture {
+    pub(crate) fn new(zone: ZoneOwner, ns: asset_core::AssetNamespace) -> Self {
+        let mut capture = Self::default();
+        capture.weapons.set_capture_ns(ns);
+        capture.fpv_meshes.set_capture_zone(zone);
+        capture.fpv_meshes.set_capture_ns(ns);
+        capture.world_weapons.set_capture_zone(zone);
+        capture.world_weapons.set_capture_ns(ns);
+        capture.xanims.set_capture_zone(zone);
+        capture.xanims.set_capture_ns(ns);
+        capture
+    }
 }
 
 impl MaterialPopulationSink {
@@ -1609,7 +1649,14 @@ impl AssetSink for MaterialPopulationSink {
         }
     }
 
-    fn set_script_strings(&mut self, _strings: ScriptStrings) {}
+    fn set_script_strings(&mut self, strings: ScriptStrings) {
+        if let Some(capture) = self.weapons.as_mut() {
+            capture.weapons.set_strings(strings);
+            capture.fpv_meshes.set_strings(strings);
+            capture.world_weapons.set_strings(strings);
+            capture.xanims.set_strings(strings);
+        }
+    }
 
     fn load_asset(
         &mut self,
@@ -1643,14 +1690,79 @@ impl AssetLinkSink for MaterialPopulationSink {
                 Err(error) => diag::warn!(World, "structured-data capture: {error}"),
             }
         }
-        self.materials.loaded(stream, ty, slot, insert_slot)
+        self.materials.loaded(stream, ty, slot, insert_slot)?;
+        if let Some(capture) = self.weapons.as_mut() {
+            if ty == AssetType::Weapon {
+                capture.weapons.capture(stream);
+            }
+            if ty == AssetType::XModel {
+                capture.fpv_meshes.capture(stream, &self.materials);
+                capture.world_weapons.capture(stream, &self.materials);
+            }
+        }
+        Ok(())
     }
 
     fn alias(&mut self, ty: AssetType, slot: Ptr, target: Ptr) -> fastfile_iw4::Result<()> {
         if let Some(sound) = self.sound.as_mut() {
             sound.iw4_alias(ty, slot, target);
         }
-        self.materials.alias(ty, slot, target)
+        self.materials.alias(ty, slot, target)?;
+        if ty == AssetType::XModel
+            && let Some(capture) = self.weapons.as_mut()
+            && let Some(&name) = capture.xmodel_names.get(&target)
+        {
+            capture.xmodel_names.insert(slot, name);
+        }
+        Ok(())
+    }
+
+    fn capture_xanim(
+        &mut self,
+        s: &ZoneStream<'_>,
+        geometry: XAnimPartsGeometry,
+    ) -> fastfile_iw4::Result<()> {
+        match self.weapons.as_mut() {
+            Some(capture) => capture.xanims.capture_xanim(s, geometry),
+            None => Ok(()),
+        }
+    }
+
+    fn remember_xmodel_surface_name(&mut self, slot: Ptr, name: Ptr) {
+        if let Some(capture) = self.weapons.as_mut() {
+            capture.xmodel_surface_names.insert(slot, name);
+        }
+    }
+
+    fn xmodel_surface_name(&self, slot: Ptr) -> Option<Ptr> {
+        self.weapons
+            .as_ref()?
+            .xmodel_surface_names
+            .get(&slot)
+            .copied()
+    }
+
+    fn remember_xmodel_surfaces(&mut self, slot: Ptr, surfaces: Ptr) {
+        if let Some(capture) = self.weapons.as_mut() {
+            capture.xmodel_surfaces.insert(slot, surfaces);
+        }
+    }
+
+    fn xmodel_surfaces(&self, slot: Ptr) -> Option<Ptr> {
+        self.weapons.as_ref()?.xmodel_surfaces.get(&slot).copied()
+    }
+
+    fn remember_xmodel_name(&mut self, slot: Ptr, insert_slot: Option<Ptr>, name: Ptr) {
+        if let Some(capture) = self.weapons.as_mut() {
+            capture.xmodel_names.insert(slot, name);
+            if let Some(insert_slot) = insert_slot {
+                capture.xmodel_names.insert(insert_slot, name);
+            }
+        }
+    }
+
+    fn xmodel_name_ptr(&self, slot: Ptr) -> Option<Ptr> {
+        self.weapons.as_ref()?.xmodel_names.get(&slot).copied()
     }
 
     fn linked_asset_name(&self, slot: Ptr) -> Option<&str> {

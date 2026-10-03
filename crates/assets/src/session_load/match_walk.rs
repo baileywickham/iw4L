@@ -179,6 +179,7 @@ pub(super) async fn walk_prepared_match(
         mut bodies,
         fpv_meshes: map_fpv,
         xanims: map_xanims,
+        zone_weapons: map_weapons,
         mut facts,
         arena_bytes: s1_map_bytes,
         mut sound,
@@ -246,9 +247,14 @@ pub(super) async fn walk_prepared_match(
         _ => map_scripts,
     };
     let mut scripts = iw4_scripts;
+    let mut sp_weapons = None;
     match so_walk {
         Some(mut so) => {
             report.append(&mut so.report);
+            sp_weapons = Some((
+                std::mem::take(&mut so.common_weapons),
+                std::mem::take(&mut so.mission.zone_weapons),
+            ));
             scripts.overlay(so.common);
             scripts.overlay(map_scripts);
             scripts.overlay(so.mission.scripts);
@@ -316,10 +322,73 @@ pub(super) async fn walk_prepared_match(
         asset_transport::process_resident_bytes().unwrap_or(0),
     ));
 
+    let mut mission_weapons = None;
+    if let Some((common_sp, mission)) = sp_weapons {
+        let crate::lane::ZoneWeapons {
+            weapons: common_sp_weapons,
+            world_weapons: common_sp_world,
+            fpv_meshes: common_sp_fpv,
+            xanims: common_sp_xanims,
+            materials: common_sp_materials,
+        } = common_sp;
+        let mp_rows = weapons.len();
+        let fpv_added = fpv_meshes.absorb(common_sp_fpv);
+        let world_added = world_weapons.absorb(common_sp_world);
+        let xanim_added = xanims.absorb(common_sp_xanims);
+        report.push(format!(
+            "spec ops SP common weapon assets: view models +{fpv_added} world guns +{world_added} clips +{xanim_added}; {} SP common materials not merged",
+            common_sp_materials.map_or(0, |m| m.materials.len())
+        ));
+        let mut sources = vec![
+            ("SP common", common_sp_weapons),
+            ("map", map_weapons.weapons),
+            ("mission", mission.weapons),
+        ];
+        world_weapons.absorb(map_weapons.world_weapons);
+        world_weapons.absorb(mission.world_weapons);
+        if let Some(mission_materials) = mission.materials {
+            let n = mission_materials.materials.len();
+            materials.absorb_asset_population_host_materials_win(mission_materials);
+            report.push(format!(
+                "spec ops mission materials: {n} merged into the map pool"
+            ));
+        }
+        mission_weapons = Some((mission.fpv_meshes, mission.xanims));
+        let mut sp_names = Vec::new();
+        for (label, zone) in sources.drain(..) {
+            if zone.is_empty() {
+                continue;
+            }
+            let (replaced, added) = weapons.absorb_overriding(zone);
+            report.push(format!(
+                "spec ops weapons from {label}: {} new, {} over MP rows ({})",
+                added.len(),
+                replaced.len(),
+                replaced.join(" ")
+            ));
+            sp_names.extend(replaced);
+            sp_names.extend(added);
+        }
+        sp_names.sort();
+        sp_names.dedup();
+        report.push(format!(
+            "spec ops weapon catalog: {} SP weapons over {mp_rows} MP rows, {} total: {}",
+            sp_names.len(),
+            weapons.len(),
+            sp_names.join(" ")
+        ));
+    }
     let common_xanim_count = xanims.len();
     let map_xanim_count = map_xanims.len();
     let t5_xanim_added = xanims.absorb(t5_xanims);
     xanims.absorb_local(map_xanims);
+    let mission_fpv = match mission_weapons {
+        Some((fpv, mission_xanims)) => {
+            xanims.absorb_local(mission_xanims);
+            Some(fpv)
+        }
+        None => None,
+    };
     weapons.resolve_sz_xanim_edges(&xanims);
     let weapon_clip_indices = weapons.bound_weapon_xanim_indices();
     let clip_prewarm_started = std::time::Instant::now();
@@ -368,6 +437,9 @@ pub(super) async fn walk_prepared_match(
     report.extend(bodies.report_lines());
     let map_fpv_n = map_fpv.len();
     let map_fpv_added = fpv_meshes.absorb(map_fpv);
+    if let Some(fpv) = mission_fpv {
+        fpv_meshes.absorb(fpv);
+    }
     fpv_meshes.set_map_namespace(map_namespace);
     weapons.resolve_fpv_mesh_edges(&fpv_meshes);
     weapons.resolve_fpv_hands(&fpv_meshes, &bodies);
@@ -1327,6 +1399,7 @@ fn t5_map_under_iw4_rules(
 
 struct SoMissionWalk {
     common: crate::ScriptSources,
+    common_weapons: crate::lane::ZoneWeapons,
     mission: crate::lane::ScriptZoneWalk,
     report: Vec<String>,
 }
@@ -1352,13 +1425,15 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
             crate::lane::ScriptZoneWalk::default()
         }
     };
+    let mut common = common;
     let mission = walk_zone(addon, true);
-    report.extend(common.report);
+    report.extend(std::mem::take(&mut common.report));
     report.extend(mission.report.iter().cloned());
     for line in &report {
         diag::info!(World, "{line}");
     }
     SoMissionWalk {
+        common_weapons: std::mem::take(&mut common.zone_weapons),
         common: common.scripts,
         mission,
         report,

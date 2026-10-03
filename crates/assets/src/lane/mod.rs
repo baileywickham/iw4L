@@ -41,6 +41,7 @@ pub struct LoadedWorld {
     pub bodies: BodyMeshBuild,
     pub fpv_meshes: FpvMeshBuild,
     pub xanims: XAnimBuild,
+    pub zone_weapons: ZoneWeapons,
     pub facts: crate::MapFacts,
     /// Bytes the zone arenas held while the walk read them. The arenas
     /// themselves die with the walk; only their size travels.
@@ -85,6 +86,17 @@ impl LoadedWorld {
             addr,
         });
     }
+}
+
+/// Weapon definitions a single-player zone carries for itself, with the world models
+/// (and, for zones walked outside the map walk, view models, clips and materials) they name.
+#[derive(Default)]
+pub struct ZoneWeapons {
+    pub weapons: WeaponBuild,
+    pub world_weapons: WorldWeaponBuild,
+    pub fpv_meshes: FpvMeshBuild,
+    pub xanims: XAnimBuild,
+    pub materials: Option<asset_material::MaterialCatalog>,
 }
 
 #[derive(Default)]
