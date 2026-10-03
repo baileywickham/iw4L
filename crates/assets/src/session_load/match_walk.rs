@@ -90,7 +90,7 @@ pub(super) async fn walk_prepared_match(
         iw5_materials,
         mut iw5_scene_models,
         iw5_shared_surfaces,
-        strings,
+        mut strings,
         counts:
             CommonCounts {
                 startup_count,
@@ -248,9 +248,12 @@ pub(super) async fn walk_prepared_match(
     };
     let mut scripts = iw4_scripts;
     let mut sp_weapons = None;
+    let mut mission_menus = None;
     match so_walk {
         Some(mut so) => {
             report.append(&mut so.report);
+            strings.absorb(std::mem::take(&mut so.strings));
+            mission_menus = so.menus.take().map(Arc::new);
             let coop_bodies = bodies.absorb(std::mem::take(&mut so.mission.zone_weapons.bodies));
             if coop_bodies > 0 {
                 report.push(format!(
@@ -329,15 +332,19 @@ pub(super) async fn walk_prepared_match(
     ));
 
     let mut mission_weapons = None;
-    if let Some((common_sp, mission)) = sp_weapons {
+    let mut sp_skeletons = asset_world::MapXModelSceneCatalog::default();
+    if let Some((common_sp, mut mission)) = sp_weapons {
         let crate::lane::ZoneWeapons {
             weapons: common_sp_weapons,
             world_weapons: common_sp_world,
             fpv_meshes: common_sp_fpv,
             xanims: common_sp_xanims,
             materials: common_sp_materials,
+            skeletons: common_sp_skeletons,
             ..
         } = common_sp;
+        sp_skeletons.absorb_captured(std::mem::take(&mut mission.skeletons));
+        sp_skeletons.absorb_captured(common_sp_skeletons);
         let mp_rows = weapons.len();
         let fpv_added = fpv_meshes.absorb(common_sp_fpv);
         let world_added = world_weapons.absorb(common_sp_world);
@@ -556,6 +563,14 @@ pub(super) async fn walk_prepared_match(
     let mut scene_names = scripts.asset_names();
     scene_names.extend(facts.objective_visuals.model_names().map(str::to_owned));
     common_scene_models.retain_names(&scene_names);
+    sp_skeletons.retain_names(&scene_names);
+    if !sp_skeletons.is_empty() {
+        report.push(format!(
+            "spec ops model skeletons for tags: {} from SP common and the mission",
+            sp_skeletons.len()
+        ));
+    }
+    world.sp_model_skeletons = sp_skeletons;
     t5_scene_models.retain_names(&scene_names);
     iw5_scene_models.retain_names(&scene_names);
     match map_namespace {
@@ -892,6 +907,7 @@ pub(super) async fn walk_prepared_match(
         player_anim_sources,
         tracers: common_tracers.publish(),
         strings,
+        mission_menus,
         report,
         prepared_map,
         pen_table: common_pen_table,
@@ -1425,6 +1441,8 @@ struct SoMissionWalk {
     common: crate::ScriptSources,
     common_weapons: crate::lane::ZoneWeapons,
     mission: crate::lane::ScriptZoneWalk,
+    strings: LocalizeCatalog,
+    menus: Option<asset_game::MenuCatalog>,
     report: Vec<String>,
 }
 
@@ -1442,11 +1460,45 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
             },
         }
     };
+    let mut strings = LocalizeCatalog::default();
+    let mut load_strings =
+        |path: &Path, report: &mut Vec<String>| match load_localize_catalog_in_lane(path) {
+            Ok(part) => {
+                report.push(format!(
+                    "spec ops: localize {} strings from {}",
+                    part.len(),
+                    path.display()
+                ));
+                strings.absorb(part);
+            }
+            Err(error) => report.push(format!(
+                "spec ops: localize gap {}: {error}",
+                path.display()
+            )),
+        };
+    load_strings(addon, &mut report);
     let common = match find_zone_for_tree(addon, "common") {
-        Ok(found) => walk_zone(&found.path, false),
+        Ok(found) => {
+            load_strings(&found.path, &mut report);
+            walk_zone(&found.path, false)
+        }
         Err(error) => {
             report.push(format!("spec ops: no SP common zone: {error}"));
             crate::lane::ScriptZoneWalk::default()
+        }
+    };
+    let menus = match asset_game::load_menu_catalog(addon) {
+        Ok(menus) => {
+            report.push(format!(
+                "spec ops: {} mission menus from {}",
+                menus.menus.len(),
+                addon.display()
+            ));
+            Some(menus)
+        }
+        Err(error) => {
+            report.push(format!("spec ops: mission menu gap: {error}"));
+            None
         }
     };
     let mut common = common;
@@ -1460,6 +1512,8 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
         common_weapons: std::mem::take(&mut common.zone_weapons),
         common: common.scripts,
         mission,
+        strings,
+        menus,
         report,
     }
 }

@@ -35,6 +35,7 @@ pub(crate) use host::players::{
     note_team_answer, personal_class, player_damage, script_seats, set_profile, sync_players,
 };
 pub(crate) use host::presence::sync_presence;
+pub(crate) use host::vehicle_drive::drive_input;
 pub use host::registry::{Native, NativeRegistry};
 pub(crate) use host::restart::restart_level;
 pub(crate) use host::weapons::sync_engine_events;

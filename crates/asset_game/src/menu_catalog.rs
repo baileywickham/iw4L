@@ -510,6 +510,11 @@ impl MenuCatalog {
     }
 }
 
+/// Menus a Spec Ops mission zone carries (`sp_eog_summary`, `coop_eog_summary`, …),
+/// staged with the match and merged into the menu catalog by the HUD.
+#[derive(Clone, Debug, Default, Resource)]
+pub struct MissionMenus(pub Option<std::sync::Arc<MenuCatalog>>);
+
 pub const UI_MENU_ZONES: &[&str] = &[
     "code_post_gfx_mp",
     "localized_code_post_gfx_mp",

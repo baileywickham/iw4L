@@ -53,6 +53,7 @@ impl Default for NativeRegistry {
         super::vehicles::register(&mut registry);
         super::physics::register(&mut registry);
         natives::t5::register(&mut registry);
+        super::vehicle_drive::register(&mut registry);
         super::controls::register(&mut registry);
         super::client_effects::register(&mut registry);
         super::guidance::register(&mut registry);
@@ -68,6 +69,7 @@ impl Default for NativeRegistry {
         super::actor_combat::register(&mut registry);
         super::actor_cover::register(&mut registry);
         super::actor_grenade::register(&mut registry);
+        super::actor_events::register(&mut registry);
         registry
     }
 }
@@ -75,6 +77,12 @@ impl NativeRegistry {
     pub fn register(&mut self, namespace: Namespace, name: &str, native: Native) {
         self.0
             .insert((namespace, name.to_ascii_lowercase()), native);
+    }
+    /// Binds `native` unless the name already has a binding.
+    pub(crate) fn register_missing(&mut self, namespace: Namespace, name: &str, native: Native) {
+        self.0
+            .entry((namespace, name.to_ascii_lowercase()))
+            .or_insert(native);
     }
     pub(crate) fn get(&self, namespace: Namespace, name: &str) -> Option<Native> {
         self.0.get(&(namespace, name.to_owned())).copied()

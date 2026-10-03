@@ -411,6 +411,9 @@ fn throw(world: &mut World, id: ActorId, object: u64) -> Option<u64> {
 /// Grenades in flight or on the ground near live actors: each actor judges a
 /// grenade once (`grenadeawareness`), then picks it up and throws it back when it
 /// is at its feet with time left, runs out of the blast, or cowers.
+/// A live grenade warns the actors around it this often (`AI_EV_GRENADE_PING`).
+const GRENADE_PING_MS: i64 = 250;
+
 pub(crate) fn run(world: &mut World, actors: &[(i32, ActorId, u64)], now: i64) {
     let live: Vec<crate::ProjectileState> = crate::frame::collect_projectiles(world)
         .into_iter()
@@ -451,6 +454,14 @@ pub(crate) fn run(world: &mut World, actors: &[(i32, ActorId, u64)], now: i64) {
             },
         };
         let fuse_left = projectile.detonate_at_ms.unwrap_or(time) - time;
+        if now % GRENADE_PING_MS == 0 {
+            super::actor_events::push(
+                world,
+                crate::actor::AiEvent::GrenadePing,
+                Some(crate::actor::EventSource::Object(object)),
+                pos,
+            );
+        }
         for (_, id, actor) in actors {
             let Some((busy, seen, awareness, dying)) =
                 world.resource::<ActorPool>().actors.get(id).map(|a| {

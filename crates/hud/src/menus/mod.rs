@@ -145,6 +145,67 @@ pub(crate) struct MenuOutputs<'w> {
     ids: Option<ResMut<'w, ActionRequestIds>>,
 }
 
+/// A Spec Ops mission zone brings its own menus (`sp_eog_summary`, the EOG
+/// notify popups); merge them once per installed match, never over a loaded menu.
+pub(crate) fn merge_mission_menus(
+    mission: Option<Res<asset_game::MissionMenus>>,
+    catalog: Option<ResMut<MenuCatalog>>,
+    mut merged: Local<Option<usize>>,
+) {
+    let (Some(mission), Some(mut catalog)) = (mission, catalog) else {
+        return;
+    };
+    let Some(menus) = mission.0.as_ref() else {
+        return;
+    };
+    let key = std::sync::Arc::as_ptr(menus) as usize;
+    if *merged == Some(key) {
+        return;
+    }
+    *merged = Some(key);
+    let mut added = 0usize;
+    for (name, def) in &menus.menus {
+        if !catalog.menus.contains_key(name) {
+            catalog.menus.insert(name.clone(), def.clone());
+            added += 1;
+        }
+    }
+    for (name, image) in &menus.zone_images {
+        catalog
+            .zone_images
+            .entry(name.clone())
+            .or_insert_with(|| image.clone());
+    }
+    for (name, image) in &menus.material_images {
+        catalog
+            .material_images
+            .entry(name.clone())
+            .or_insert_with(|| image.clone());
+    }
+    for (name, plan) in &menus.material_2d_plans {
+        catalog
+            .material_2d_plans
+            .entry(name.clone())
+            .or_insert_with(|| plan.clone());
+    }
+    for (name, bits) in &menus.material_state_bits {
+        catalog
+            .material_state_bits
+            .entry(name.clone())
+            .or_insert_with(|| bits.clone());
+    }
+    for (name, srgb) in &menus.material_srgb_reads {
+        catalog
+            .material_srgb_reads
+            .entry(name.clone())
+            .or_insert(*srgb);
+    }
+    diag::info!(
+        Ui,
+        "spec ops: {added} mission menus merged into the menu catalog"
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_script_menus(
     surface: Res<crate::surface::Hud2dSurface>,

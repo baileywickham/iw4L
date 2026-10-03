@@ -100,6 +100,10 @@ pub struct PreparedWorld {
 
     pub map_xmodel_scene_assets: asset_world::MapXModelSceneCatalog,
 
+    /// Skeletons of SP common and Spec Ops mission XModels the scripts name
+    /// (vehicles, riders): tags for the sim only, never drawn from here.
+    pub sp_model_skeletons: asset_world::MapXModelSceneCatalog,
+
     pub script_model_instances: Vec<asset_world::ScriptModelSceneInstance>,
 
     pub script_brush_models: Vec<asset_world::ScriptBrushModelPlacement>,
@@ -165,6 +169,7 @@ pub struct PreparedMatch {
     pub tracers: asset_game::TracerDefinitions,
 
     pub strings: LocalizeCatalog,
+    pub mission_menus: Option<Arc<asset_game::MenuCatalog>>,
     pub report: Vec<String>,
 
     pub prepared_map: PreparedMap,

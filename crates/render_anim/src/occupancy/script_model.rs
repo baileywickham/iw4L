@@ -259,10 +259,12 @@ pub fn register_script_model_systems(app: &mut App) {
             (
                 publish_script_model_dobjs,
                 pose_script_models,
+                publish_script_model_bolts,
                 commit_script_model_draw_plan,
             )
                 .chain()
                 .after(occupy_script_model_scene_ents)
+                .after(crate::anim::dobj_pose::begin_dobj_pose_frame)
                 .after(frame::WorkerCmdSet::CellSceneEnt)
                 .after(frame::WorkerCmdSet::DpvsEnt)
                 .in_set(ScriptModelSkinSet)
@@ -1268,6 +1270,110 @@ fn publish_script_model_dobjs(
             .is_some()
         {
             frame.publish(id, entity, persist.by_id[&id.to_wire()].dobj.clone());
+        }
+    }
+}
+
+/// The muzzle tag of a script-model DObj: `tag_flash` of the model held in a hand
+/// (`tag_weapon_right` / `tag_weapon_left`), else the first `tag_flash`.
+fn script_flash_bone(
+    dobj: &xmodel_runtime::DObj,
+    state: &xmodel_runtime::DObjSemanticState,
+) -> Option<usize> {
+    let held = state.composition.models.iter().position(|model| {
+        model.attach_tag.as_deref().is_some_and(|tag| {
+            tag.eq_ignore_ascii_case("tag_weapon_right")
+                || tag.eq_ignore_ascii_case("tag_weapon_left")
+        })
+    });
+    let in_model = |index: usize| {
+        let slot = dobj.models.get(index)?;
+        (slot.base..slot.base + slot.bone_count)
+            .find(|&bone| dobj.bones[bone].name.eq_ignore_ascii_case("tag_flash"))
+    };
+    held.and_then(in_model).or_else(|| dobj.find("tag_flash"))
+}
+
+/// Actors and other armed script models fire through entity events like players:
+/// publish their posed DObj for bolted FX and point the centity's `RemoteFxBolts`
+/// at the held weapon's `tag_flash` / `tag_brass`.
+fn publish_script_model_bolts(
+    mut commands: Commands,
+    owners: Query<(&WorldScriptModelInstance, &Transform, &Visibility)>,
+    persist: Res<ScriptModelDobjs>,
+    xanims: Option<Res<assets::PreparedXAnims>>,
+    slots: Res<net::CEntitySlots>,
+    runtimes: Query<&net::CEntityRuntime>,
+    mut bolts: Query<&mut crate::occupancy::remote_body::RemoteFxBolts>,
+    mut dobj_poses: ResMut<crate::anim::dobj_pose::HostDObjPoseFrame>,
+) {
+    for (owner, transform, visibility) in &owners {
+        if *visibility == Visibility::Hidden {
+            continue;
+        }
+        let (Some(id), Some(number)) = (
+            owner.authority_owner.and_then(|owner| owner.script_model()),
+            owner.gentity_number,
+        ) else {
+            continue;
+        };
+        let Some(slot) = persist.by_id.get(&id.to_wire()) else {
+            continue;
+        };
+        let Some(flash) = script_flash_bone(&slot.dobj, &owner.dobj_state) else {
+            continue;
+        };
+        let Some(centity) = slots.entity_for_number(number) else {
+            continue;
+        };
+        let Ok(runtime) = runtimes.get(centity) else {
+            continue;
+        };
+        let Ok(request) = owner.dobj_state.resolve_request(|name| {
+            xanims
+                .as_ref()?
+                .0
+                .clip(asset_core::AssetNamespace::Iw4, name)
+        }) else {
+            continue;
+        };
+        let Ok(local) = xmodel_runtime::pose_dobj(&slot.dobj, &request, Mat4::IDENTITY) else {
+            continue;
+        };
+        let key = u32::from(number);
+        let e_flags = runtime.next_state.e_flags;
+        if dobj_poses
+            .publish(
+                key,
+                runtime.in_next_snap(),
+                e_flags,
+                transform.to_matrix(),
+                &local,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        let target = |bone: Option<usize>| -> Option<fx::FxBoltTarget> {
+            let bone = u16::try_from(bone?).ok()?;
+            Some(fx::FxBoltTarget {
+                dobj: key,
+                bone,
+                centity_teleport: fx_iw4::bolt_spawn_teleport_bit(key, e_flags),
+                orientation: dobj_poses.resolve(key, i32::from(bone)).ok()?,
+            })
+        };
+        let next = crate::occupancy::remote_body::RemoteFxBolts {
+            flash: target(Some(flash)),
+            brass: target(slot.dobj.find("tag_brass")),
+            knife: None,
+            laser: None,
+        };
+        match bolts.get_mut(centity) {
+            Ok(mut current) => *current = next,
+            Err(_) => {
+                commands.entity(centity).insert(next);
+            }
         }
     }
 }

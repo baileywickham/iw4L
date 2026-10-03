@@ -1479,6 +1479,23 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                 ..Default::default()
             },
         );
+        if world.publishes_snapshot()
+            && let Some(mut pool) = world.ecs().get_resource_mut::<crate::actor::ActorPool>()
+            && !pool.actors.is_empty()
+        {
+            let attacker = match info.projectile.owner_entity {
+                Some(entity) => crate::Attacker::Entity(entity),
+                None => crate::Attacker::Client(info.projectile.owner),
+            };
+            pool.events.push(crate::actor::PendingEvent {
+                kind: crate::actor::AiEvent::Explosion,
+                source: Some(crate::actor::EventSource::Attacker(attacker)),
+                attacker: None,
+                at: info.origin,
+                end: None,
+                weapon: info.projectile.weapon,
+            });
+        }
         if !resolves_damage {
             continue;
         }

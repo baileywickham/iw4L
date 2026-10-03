@@ -294,6 +294,16 @@ pub(crate) fn load_field(world: &mut World, actor: ActorId, name: &str) -> Optio
         "lookaheaddist" => Value::Float(state.lookahead_dist),
         "velocity" => Value::Vector(state.velocity),
         "movemode" => Value::string(state.move_mode.name()),
+        "footstepdetectdist" | "footstepdetectdistwalk" | "footstepdetectdistsprint"
+            if !state.fields.contains_key(def.name) =>
+        {
+            let name = def.name;
+            return super::actor_events::footstep_detect_default(world, name).map(Value::Float);
+        }
+        "alertlevelint" => Value::Int(match state.fields.get("alertlevel") {
+            Some(Value::String(level)) => alert_level_int(level).unwrap_or(0),
+            _ => 0,
+        }),
         "node" | "prevnode" => {
             let node = if def.name == "node" {
                 state.claimed
@@ -338,6 +348,7 @@ pub(crate) fn store_field(
     let Some(state) = pool.actors.get_mut(&actor) else {
         return Ok(false);
     };
+    let mut alert_change = None;
     match (def.name, &value) {
         ("team", Value::String(team)) => {
             let team = team.to_string();
@@ -347,11 +358,38 @@ pub(crate) fn store_field(
             state.team = team.into();
         }
         ("type", Value::String(species)) => state.species = species.to_string().into(),
+        ("alertlevel", Value::String(level)) => {
+            if alert_level_int(level).is_none() {
+                return Err(format!("unknown alert level '{level}'"));
+            }
+            let was = match state.fields.insert(def.name, value.clone()) {
+                Some(Value::String(old)) => old.to_string(),
+                _ => "noncombat".into(),
+            };
+            if !was.eq_ignore_ascii_case(level) {
+                alert_change = Some((state.object, was, level.to_string()));
+            }
+        }
         _ => {
             state.fields.insert(def.name, value);
         }
     }
+    if let Some((object, was, level)) = alert_change {
+        diag::info!(
+            Sim,
+            "actor: {} alertlevel {was} -> {level}",
+            super::actor_combat::label(world, object)
+        );
+    }
     Ok(true)
+}
+
+/// `alertlevel` as the engine stores it (`alertlevelint`).
+fn alert_level_int(level: &str) -> Option<i32> {
+    ["noncombat", "aware", "alert", "combat"]
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(level))
+        .map(|n| n as i32)
 }
 
 fn live_actors(world: &World) -> Vec<(i32, ActorId, u64)> {
@@ -531,6 +569,7 @@ pub(crate) fn run_actors(world: &mut World) {
     let mut budget = super::actor_nav::EXPANSION_BUDGET;
     super::presence::settle_collision(world);
     let live = live_actors(world);
+    super::actor_events::run(world, &live, now);
     super::actor_combat::run(world, &live, now);
     super::actor_grenade::run(world, &live, now);
     for (_, id, object) in live_actors(world) {
@@ -586,7 +625,9 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         objects(world, ids)
     });
     registry.register(Function, "isspawner", |world, _, args| {
-        let spawner = kind_of(world, arg(args, 0)?) == Some(EntityKind::ActorSpawner);
+        let value = arg(args, 0)?;
+        let spawner = kind_of(world, value) == Some(EntityKind::ActorSpawner)
+            || super::vehicles::is_sp_spawner(world, value);
         Ok(Value::Int(spawner.into()))
     });
     registry.register(Function, "isai", |world, _, args| {

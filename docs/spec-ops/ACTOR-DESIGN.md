@@ -42,7 +42,7 @@ Written 2026-10-02 from a read of this repo, the SP GSC (trainer, `animscripts/*
 | S2 path to goals | goal nodes reached with `"goal"`, move/stop scripts, one traverse | friendly chains |
 | S3 see, shoot, die | spawner waves acquire and shoot the player, die into corpses | `so_killspree_favela`, `so_killspree_invasion` |
 | S4 cover, grenades, pain | cover use, grenade throw/react | `so_bridge`, `so_juggernauts_favela` |
-| S5 special | stealth awareness, dogs, turrets, vehicle riders | `so_ghillies`, `so_hidden_so_ghillies`, `so_ac130_co_hunted` |
+| S5 special | stealth awareness (done: `maxvisibledist`, AI events/listeners, `alertlevel`), dogs, turrets, vehicle riders | `so_ghillies`, `so_hidden_so_ghillies`, `so_ac130_co_hunted` |
 
 ## Risks
 

@@ -1170,7 +1170,6 @@ pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<V
                 .filter(|&n| n > 0)
                 .unwrap_or(ps.map_or(0, |ps| ps.max_health)),
         ),
-        // SP names the same client field `playername`.
         "name" | "playername" => Value::String(client_name(&meta?.name).into()),
         "score" => Value::Int(meta?.score),
         "kills" => Value::Int(meta?.kills),
@@ -1335,7 +1334,7 @@ pub(crate) fn store_field(
                 }
             }
         }
-        "name" => return Err("player field name is read-only".into()),
+        "name" | "playername" => return Err(format!("player field {name} is read-only")),
         "laststand" if single_player(world) => {
             let down = !matches!(value, Value::Undefined | Value::Int(0));
             super::natives::sp_player::set_last_stand(&mut FrameWorld::from_world(world), id, down);

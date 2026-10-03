@@ -44,6 +44,14 @@ pub(crate) fn eye(world: &mut World, object: u64) -> [f32; 3] {
         return [origin[0], origin[1], origin[2] + height];
     }
     let Some(id) = actor_of(world, object) else {
+        let corpse = world
+            .resource::<Runtime>()
+            .entities
+            .get(&object)
+            .is_some_and(|e| e.kind == super::entities::EntityKind::ActorCorpse);
+        if corpse {
+            return [origin[0], origin[1], origin[2] + CORPSE_CENTROID];
+        }
         return origin;
     };
     if let Some((at, _)) = super::presence::tag_world(world, object, "tag_eye") {
@@ -74,10 +82,42 @@ fn ignore(world: &World, actor: u64, target: u64) -> TraceIgnore {
 
 /// How long a sight result stays in the per-pair cache for `cansee`'s latency.
 const SIGHT_CACHE_MS: i64 = 1000;
+/// A body on the ground is seen at its middle, not at its feet.
+const CORPSE_CENTROID: f32 = 12.0;
 
-/// `Actor_CanSeeEntity`: within `maxsightdistsqrd`, inside the fov cone, and an
-/// unobstructed line from eye to eye. A result younger than `latency_ms` (and any
-/// from this tick) is reused.
+/// A sentient's `maxvisibledist`: no actor sees it from farther away. Stealth
+/// scripts write it from the player's stance, movement and cover every frame.
+/// Anything that is not a sentient (a corpse, a script model) has no such limit.
+pub(crate) fn max_visible_dist(world: &mut World, target: u64) -> f32 {
+    if let Some(id) = actor_of(world, target) {
+        return world
+            .resource::<ActorPool>()
+            .actors
+            .get(&id)
+            .map_or(DEFAULT_VISIBLE_DIST, |a| a.float_field("maxvisibledist"));
+    }
+    let sentient = world.resource::<Runtime>().player_client(target).is_some()
+        || world
+            .resource::<ActorPool>()
+            .sentients
+            .contains_key(&target);
+    if !sentient {
+        return f32::INFINITY;
+    }
+    match super::players::entity_field(world, target, "maxvisibledist") {
+        Value::Float(v) => v,
+        Value::Int(v) => v as f32,
+        _ => DEFAULT_VISIBLE_DIST,
+    }
+}
+
+const DEFAULT_VISIBLE_DIST: f32 = 8192.0;
+
+/// `Actor_CanSeeEntity`: within `maxsightdistsqrd` and the target's
+/// `maxvisibledist`, inside the fov cone (`fovcosinebusy` while a scripted
+/// animation holds the actor; at least 90 degrees for its enemy or favorite
+/// enemy), and an unobstructed line from eye to eye. A result younger than
+/// `latency_ms` (and any from this tick) is reused.
 pub(crate) fn can_see(
     world: &mut World,
     id: ActorId,
@@ -98,11 +138,19 @@ pub(crate) fn can_see(
     let (fov, max_sq) = {
         let pool = world.resource::<ActorPool>();
         let a = &pool.actors[&id];
+        let busy = a
+            .animscript
+            .as_ref()
+            .is_some_and(|(name, _)| &**name == "scripted");
+        let fov = a.float_field(if busy { "fovcosinebusy" } else { "fovcosine" });
+        let target_of_choice = a.enemy == Some(target)
+            || matches!(a.fields.get("favoriteenemy"), Some(Value::Object(o)) if *o == target);
         (
-            a.float_field("fovcosine"),
+            if target_of_choice { fov.min(0.0) } else { fov },
             a.float_field("maxsightdistsqrd"),
         )
     };
+    let max_sq = max_sq.min(max_visible_dist(world, target).powi(2));
     let from = eye(world, object);
     let to = eye(world, target);
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];

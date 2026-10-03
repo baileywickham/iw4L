@@ -843,6 +843,9 @@ pub(crate) fn constrain_cmd(
     if controls.jump_disabled {
         cmd.buttons &= !buttons::JUMP;
     }
+    if controls.melee_disabled {
+        cmd.buttons &= !buttons::MELEE_CHARGE;
+    }
     if controls.weapons_disabled {
         cmd.buttons &= !(buttons::ATTACK | buttons::THROW | buttons::ADS | buttons::MELEE_CHARGE);
     }

@@ -8,7 +8,7 @@ use super::natives::engine::{entity_id, path_node_object};
 use crate::actor::path::{self, ActorPath, NEAREST_NODE_DIST, PathSearch, SearchStep};
 use crate::actor::{Actor, ActorId, ActorPool, DetourKind, MoveMode, Orient};
 use crate::frame::FrameWorld;
-use crate::script::runtime::{raise, thread_running};
+use crate::script::runtime::{raise, run_now_thread, thread_running};
 use crate::script::{Arc, Namespace, NativeRegistry, Runtime, Value};
 use bevy_ecs::prelude::World;
 
@@ -546,7 +546,8 @@ fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
 }
 
 /// Animscripts that run to their end before the state picks again.
-const STICKY_ANIMSCRIPTS: [&str; 5] = [
+const STICKY_ANIMSCRIPTS: [&str; 6] = [
+    "custom",
     "pain",
     "death",
     "cover_arrival",
@@ -570,6 +571,13 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     let threatened = actor(world, id)
         .and_then(|a| a.grenade)
         .is_some_and(|g| world.resource::<Runtime>().live(&g));
+    if let Some((name, serial)) = &current
+        && &**name == "scripted"
+        && thread_running(world, *serial)
+        && actor(world, id).is_some_and(|a| now < a.scripted_until_ms)
+    {
+        return;
+    }
     if let Some((name, serial)) = &current
         && STICKY_ANIMSCRIPTS.contains(&&**name)
         && thread_running(world, *serial)
@@ -655,6 +663,63 @@ pub(crate) fn stop(world: &mut World, id: ActorId) {
     release_all(world, id);
 }
 
+/// `animscripted` on an actor: `animscripts/scripted::init` records the
+/// arguments, then the `scripted` animscript plays them (`startscriptedanim`)
+/// and holds the actor still for `duration_ms`. `None` when not an actor.
+pub(crate) fn begin_scripted(
+    world: &mut World,
+    receiver: &Value,
+    args: &[Value],
+    duration_ms: i64,
+) -> Option<()> {
+    let (id, object) = receiver_actor(world, receiver).ok()?;
+    let now = super::players::now_ms(world);
+    clear_path(world, id);
+    if let Err(fault) = run_now_thread(
+        world,
+        "animscripts/scripted::init",
+        receiver.clone(),
+        args.to_vec(),
+        now,
+    ) {
+        diag::warn!(Sim, "actor: animscripts/scripted::init faulted: {fault}");
+    }
+    with_actor(world, id, |a| a.scripted_until_ms = now + duration_ms);
+    switch_animscript(world, id, object, "scripted".into(), now);
+    Some(())
+}
+
+/// `animcustom( func )`: the running animscript ends and `func` runs as the
+/// actor's animscript (`custom`) until it returns.
+fn begin_custom(world: &mut World, receiver: &Value, function: u32) -> Result<(), String> {
+    let (id, object) = receiver_actor(world, receiver)?;
+    let now = super::players::now_ms(world);
+    if let Some((name, serial)) = actor(world, id).and_then(|a| a.animscript.clone()) {
+        if thread_running(world, serial) {
+            crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
+        }
+        run_script(world, &format!("animscripts/{name}::end_script"), receiver.clone());
+    }
+    clear_path(world, id);
+    let serial =
+        crate::script::runtime::spawn_function(world, function, receiver.clone(), Vec::new())?;
+    with_actor(world, id, |a| {
+        a.prev_animscript = a.animscript.take().map(|(name, _)| name);
+        a.anim_mode = "normal".into();
+        a.orient = Orient::Default;
+        a.animscript = Some(("custom".into(), serial));
+        a.animscript_started_ms = now;
+    });
+    Ok(())
+}
+
+/// `stopanimscripted`: the actor's state picks its animscript again.
+pub(crate) fn end_scripted(world: &mut World, receiver: &Value) {
+    if let Ok((id, _)) = receiver_actor(world, receiver) {
+        with_actor(world, id, |a| a.scripted_until_ms = 0);
+    }
+}
+
 /// One actor's think: goal, cover or detour, path, movement, facing,
 /// animscript, `"goal"`.
 pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budget: &mut u32) {
@@ -663,7 +728,8 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
         .entities
         .get(&object)
         .is_some_and(|e| e.linked_to.is_some());
-    if linked {
+    let scripted = actor(world, id).is_some_and(|a| now < a.scripted_until_ms);
+    if linked || scripted {
         clear_path(world, id);
         select_animscript(world, id, object, now);
         return;
@@ -1049,6 +1115,13 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             return Err(format!("unknown anim mode '{mode}'"));
         }
         with_actor(world, id, |a| a.anim_mode = mode.into());
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "animcustom", |world, receiver, args| {
+        match arg(args, 0)? {
+            Value::Function(function) => begin_custom(world, receiver, *function)?,
+            _ => return Err("animcustom expects a function".into()),
+        }
         Ok(Value::Undefined)
     });
     registry.register(Method, "teleport", |world, receiver, args| {

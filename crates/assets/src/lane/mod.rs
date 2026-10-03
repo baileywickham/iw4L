@@ -98,6 +98,7 @@ pub struct ZoneWeapons {
     pub xanims: XAnimBuild,
     pub materials: Option<asset_material::MaterialCatalog>,
     pub bodies: BodyMeshBuild,
+    pub skeletons: asset_world::MapXModelSceneCatalog,
 }
 
 #[derive(Default)]

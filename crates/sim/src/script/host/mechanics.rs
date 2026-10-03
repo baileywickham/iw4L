@@ -15,6 +15,8 @@ pub(crate) struct Mechanics {
     finished: Vec<(u64, &'static str)>,
     pub(crate) anims: BTreeMap<u64, super::anim::EntityAnim>,
     pub(crate) anim_notes: Vec<(u64, crate::script::Arc<str>, crate::script::Arc<str>)>,
+    /// Notifies due at a level time: `(due_ms, entity, name, arguments)`.
+    timed: Vec<(i64, u64, crate::script::Arc<str>, Vec<Value>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +38,16 @@ const EXPLOSION_UPBIAS: f32 = 0.5;
 const EXPLOSION_MIN_FORCE: f32 = 40.0;
 
 impl Mechanics {
+    pub(crate) fn notify_at(
+        &mut self,
+        due_ms: i64,
+        object: u64,
+        name: crate::script::Arc<str>,
+        arguments: Vec<Value>,
+    ) {
+        self.timed.push((due_ms, object, name, arguments));
+    }
+
     pub(crate) fn start(&mut self, object: u64, motion: Motion) {
         if motion.field == "origin" {
             self.bodies.remove(&object);
@@ -186,6 +198,20 @@ pub(crate) fn deliver_finished(world: &mut World) {
     let finished = std::mem::take(&mut world.resource_mut::<Mechanics>().finished);
     for (object, name) in finished {
         raise(world, Value::Object(object), name, Vec::new());
+    }
+    let now = super::players::now_ms(world);
+    let due: Vec<_> = {
+        let mut mechanics = world.resource_mut::<Mechanics>();
+        let (due, later) = std::mem::take(&mut mechanics.timed)
+            .into_iter()
+            .partition(|(at, _, _, _)| *at <= now);
+        mechanics.timed = later;
+        due
+    };
+    for (_, object, name, arguments) in due {
+        if world.resource::<Runtime>().live(&object) {
+            raise(world, Value::Object(object), &name, arguments);
+        }
     }
     let notes = std::mem::take(&mut world.resource_mut::<Mechanics>().anim_notes);
     static NOTE_LOG: std::sync::LazyLock<bool> =

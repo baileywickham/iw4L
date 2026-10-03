@@ -1476,7 +1476,13 @@ fn run_ready(world: &mut World, program: &Program, now: i64) {
     }
 }
 
+/// Runtime errors one thread may raise in one run before it is killed: a loop
+/// that keeps failing (and so never reaches its wait) would otherwise spin to
+/// the instruction budget, reporting on every pass.
+const SLICE_ERROR_LIMIT: u32 = 1000;
+
 pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread, now: i64) {
+    let mut slice_errors = 0u32;
     while thread.state == ThreadState::Runnable {
         let frame = thread.frames.last().unwrap();
         let function = &program.functions[frame.function];
@@ -1496,6 +1502,9 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
         let exhausted = world.resource::<Runtime>().budget == 0;
         let (pops, pushes) = stack_effect(&op);
         let iterates = matches!(op, Op::ArrayKeys);
+        // A waittill that cannot register (undefined receiver or name) would let
+        // the thread run on as if notified; a loop around it then never yields.
+        let blocks = matches!(op, Op::Await(_) | Op::AwaitMatch(_));
         let before = thread.stack.len();
         let result = if exhausted {
             Err("potential infinite loop in script - killing thread".into())
@@ -1528,7 +1537,14 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
             break;
         }
         report(world, &fault);
-        if exhausted {
+        slice_errors += 1;
+        if slice_errors == SLICE_ERROR_LIMIT {
+            report(
+                world,
+                &Fault::at(location, "too many runtime errors - killing thread"),
+            );
+        }
+        if exhausted || blocks || slice_errors >= SLICE_ERROR_LIMIT {
             let serial = thread.serial;
             let mut runtime = world.resource_mut::<Runtime>();
             runtime.budget = INSTRUCTION_BUDGET;

@@ -96,8 +96,15 @@ fn mission_result(world: &mut World, outcome: &str) {
     diag::info!(Sim, "spec ops: mission {outcome} {}", fields.join(" "));
 }
 
-/// `maps\_endmission::coop_eog_summary` fills dvars for the EOG menu, then opens it; the menu is not
-/// drawn yet, so the result and the summary table the mission built go to the log.
+/// Dvars the EOG summary menus read (`sp_eog_summary`, `coop_eog_summary`, notify popups).
+pub(crate) fn is_eog_dvar(name: &str) -> bool {
+    name.starts_with("ui_")
+        || name.starts_with("player_")
+        || matches!(name, "elapsed_mission_time" | "solo_play" | "coop")
+}
+
+/// `maps\_endmission::coop_eog_summary` fills dvars for the EOG menu, then opens it; the result
+/// and the summary table the mission built also go to the log.
 pub(crate) fn eog_summary(world: &mut World, menu: &str) {
     let dvars = world.resource::<Runtime>().dvars.clone();
     let get = |name: &str| dvars.get(name).cloned().unwrap_or_default();
@@ -295,4 +302,185 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     for name in ["uploadscore", "uploadtime"] {
         registry.register(Method, name, |_, _, _| Ok(Value::Undefined));
     }
+    register_presentation(registry);
+}
+
+/// SP builtins with no simulation effect here: sound EQ/reverb, lighting and
+/// screen effects, look-at text, saves, badplaces, glass, and vehicle physics
+/// knobs on vehicles that are not simulated. Queries answer as for a level
+/// with none of these.
+fn register_presentation(registry: &mut NativeRegistry) {
+    use Namespace::{Function, Method};
+    for name in [
+        "deactivateeq",
+        "seteqlerp",
+        "setreverb",
+        "eqoff",
+        "eqon",
+        "seteq",
+        "seteqbands",
+        "deactivatereverb",
+        "setsoundblend",
+        "stopsoundchannel",
+        "startusingheroonlylighting",
+        "startusinglessfrequentlighting",
+        "setlightcolor",
+        "setwatersheeting",
+        "painvisionon",
+        "painvisionoff",
+        "setvehiclelookattext",
+        "setlookattext",
+        "playerclearstreamorigin",
+        "playersetstreamorigin",
+        "laserforceon",
+        "laserforceoff",
+        "enableaimassist",
+        "disableaimassist",
+        "dontinterpolate",
+        "playrumblelooponentity",
+        "setwaypointedgestyle_rotatingicon",
+        "setwaypointiconoffscreenonly",
+        "setplayerintelfound",
+        "joltbody",
+        "vibrate",
+        "setairresistance",
+        "restoredefaultdroppitch",
+        "hidepart_allinstances",
+        "lerpviewangleclamp",
+        "vehicle_turnengineoff",
+        "setfriendlychain",
+        "startragdollfromimpact",
+        "resumespeed",
+        "setwaitspeed",
+        "vehphys_crash",
+        "dontcastshadows",
+        "hideonclient",
+        "showonclient",
+        "setswitchnode",
+        "setproneanimnodes",
+        "updateprone",
+        "enterprone",
+        "exitprone",
+        "pushplayer",
+        // The breach charge plays as the viewmodel raise; the rig carries the player.
+        "enablebreaching",
+        "disablebreaching",
+        "allowcrouch",
+        "allowprone",
+        "allowstand",
+        "vehphys_disablecrashing",
+        "vehphys_enablecrashing",
+        "setsuppressiontime",
+        "setplayerspread",
+        "setaispread",
+        "setturretignoregoals",
+        "hideallparts",
+    ] {
+        registry.register_missing(Method, name, |_, _, _| Ok(Value::Undefined));
+    }
+    for name in [
+        "soundsettimescalefactor",
+        "setsunlight",
+        "setblur",
+        "destroyglass",
+        "objective_additionalposition",
+        "commitsave",
+        "badplace_brush",
+        "badplace_cylinder",
+        "badplace_arc",
+        "badplace_delete",
+        "physicsjitter",
+        "cinematicingamesync",
+        "target_setjavelinonly",
+        "precachenightvisioncodeassets",
+        "setculldist",
+        "sethalfresparticles",
+    ] {
+        registry.register_missing(Function, name, |_, _, _| Ok(Value::Undefined));
+    }
+    for name in [
+        "iswaitingonsound",
+        "vehicle_isphysveh",
+        "isinscriptedstate",
+        "getplayerintelisfound",
+    ] {
+        registry.register_missing(Method, name, |_, _, _| Ok(Value::Int(0)));
+    }
+    for name in ["issaverecentlyloaded", "commitwouldbevalid"] {
+        registry.register_missing(Function, name, |_, _, _| Ok(Value::Int(0)));
+    }
+    registry.register_missing(Function, "issavesuccessful", |_, _, _| Ok(Value::Int(1)));
+    for name in ["savegame", "savegamenocommit"] {
+        registry.register_missing(Function, name, |_, _, _| Ok(Value::Int(0)));
+    }
+    registry.register_missing(Function, "getglass", |_, _, _| Ok(Value::Undefined));
+    registry.register_missing(Function, "getglassarray", |world, _, _| {
+        super::super::arrays::new_array(world, Vec::new())
+    });
+    registry.register_missing(Method, "getwheelsurface", |_, _, _| {
+        Ok(Value::string("dirt"))
+    });
+    registry.register_missing(Method, "getlightcolor", |_, _, _| {
+        Ok(Value::Vector([1.0; 3]))
+    });
+    registry.register_missing(Method, "getplayerviewheight", |_, _, _| {
+        Ok(Value::Float(60.0))
+    });
+    registry.register_missing(Method, "getnormalizedmovement", |_, _, _| {
+        Ok(Value::Vector([0.0; 3]))
+    });
+    registry.register_missing(Method, "getcentroid", |world, receiver, _| {
+        let id = entity_id(world, receiver)?;
+        Ok(world.resource_mut::<Runtime>().object_field(id, "origin"))
+    });
+    // Actors do not operate turrets yet; `useturret` only records the turret
+    // so `getturret` stops `_vehicle_aianim`/`_mgturret` re-mounting each second.
+    registry.register_missing(Method, "useturret", |world, receiver, args| {
+        let id = entity_id(world, receiver)?;
+        let turret = super::super::args::arg(args, 0)?.clone();
+        world
+            .resource_mut::<Runtime>()
+            .set_object_field(id, "code_turret", turret);
+        Ok(Value::Undefined)
+    });
+    registry.register_missing(Method, "getturret", |world, receiver, _| {
+        let id = entity_id(world, receiver)?;
+        let turret = world
+            .resource_mut::<Runtime>()
+            .object_field(id, "code_turret");
+        Ok(match turret {
+            Value::Object(object) if world.resource::<Runtime>().live(&object) => turret,
+            _ => Value::Undefined,
+        })
+    });
+    registry.register_missing(Method, "stopuseturret", |world, receiver, _| {
+        let id = entity_id(world, receiver)?;
+        world
+            .resource_mut::<Runtime>()
+            .set_object_field(id, "code_turret", Value::Undefined);
+        Ok(Value::Undefined)
+    });
+    registry.register_missing(Function, "getmapsunlight", |_, _, _| {
+        Ok(Value::Vector([1.0; 3]))
+    });
+    // `linktoblendtotag( ent, tag, blendtime )`: links at once, without the blend.
+    registry.register_missing(Method, "linktoblendtotag", |world, receiver, args| {
+        let link = world
+            .resource::<NativeRegistry>()
+            .get(Method, "linkto")
+            .ok_or("linkto is not bound")?;
+        link(world, receiver, &args[..args.len().min(2)])
+    });
+    registry.register_missing(Function, "getfreeaicount", |world, _, _| {
+        let used = world.resource::<crate::actor::ActorPool>().actors.len();
+        Ok(Value::Int(
+            crate::actor::MAX_ACTORS.saturating_sub(used) as i32
+        ))
+    });
+    registry.register_missing(Function, "isenemyteam", |_, _, args| {
+        let a = string(args, 0)?;
+        let b = string(args, 1)?;
+        let side = |team: &str| matches!(team, "allies" | "axis" | "team3");
+        Ok(Value::Int((side(&a) && side(&b) && a != b).into()))
+    });
 }

@@ -560,7 +560,8 @@ impl Runtime {
 }
 
 pub(crate) fn code_classname(classname: &str) -> &str {
-    if classname.starts_with("script_vehicle") {
+    // `script_vehicle_collmap` is vehicle collision the compiler consumed, not a vehicle.
+    if classname.starts_with("script_vehicle") && classname != "script_vehicle_collmap" {
         return "script_vehicle";
     }
     const CODES: [&str; 5] = [

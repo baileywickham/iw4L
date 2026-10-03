@@ -276,6 +276,7 @@ pub fn apply_prepared_match(
             player_anim_sources,
             mut prepared_map,
             strings,
+            mission_menus,
             clip,
             pen_table,
             pen_table_loaded,
@@ -310,6 +311,7 @@ pub fn apply_prepared_match(
             asset_game::SessionTeamSettings(facts.team_settings),
         );
         stage_resource(&mut install, assets::PreparedLocalizedStrings(strings));
+        stage_resource(&mut install, asset_game::MissionMenus(mission_menus));
         stage_resource(&mut install, fx_catalog);
         stage_resource(&mut install, type10);
         stage_resource(&mut install, fx_models);
@@ -778,6 +780,7 @@ struct MatchInstallPlan {
     player_anim_sources: asset_anim::PlayerAnimSources,
     prepared_map: assets::PreparedMap,
     strings: asset_game::LocalizeCatalog,
+    mission_menus: Option<std::sync::Arc<asset_game::MenuCatalog>>,
     clip: Option<Arc<ClipCollision>>,
     pen_table: weapon_iw4::PenetrationDepthTable,
     pen_table_loaded: bool,
@@ -1012,6 +1015,7 @@ fn preflight_match_install(
         }
     }
     let strings = std::mem::take(&mut prepared.strings);
+    let mission_menus = prepared.mission_menus.take();
     let kind = match match_kind(mode_selection) {
         Ok(kind) => kind,
         Err(gap) => {
@@ -1252,6 +1256,7 @@ fn preflight_match_install(
         player_anim_sources,
         prepared_map,
         strings,
+        mission_menus,
         clip: prepared.clip,
         pen_table: prepared.pen_table,
         pen_table_loaded: prepared.pen_table_loaded,
@@ -1527,11 +1532,17 @@ fn authority_entity_model_install(world: &assets::PreparedWorld) -> AuthorityEnt
         brush_movers.push((sim_id, brush.cmodel_handle, brush.origin, brush.angles));
     }
     let standalone_brush_links = brush_movers.len();
-    let models = world
+    let mut models: std::collections::BTreeMap<_, _> = world
         .map_xmodel_scene_assets
         .iter()
         .map(|(key, asset)| (key.0.clone(), retained(Some(asset))))
         .collect();
+    for (key, asset) in world.sp_model_skeletons.iter() {
+        let entry = models.entry(key.0.clone()).or_insert(None);
+        if entry.is_none() {
+            *entry = retained(Some(asset));
+        }
+    }
     AuthorityEntityModelInstall {
         capabilities,
         brush_movers,

@@ -33,6 +33,14 @@ pub(super) fn set_slow_motion(
     if !slow_motion.valid() {
         return Err("slow-motion scales must be finite and positive".into());
     }
+    diag::info!(
+        Sim,
+        "setslowmotion: {:.2} -> {:.2} over {} ms at {} ms",
+        slow_motion.from,
+        slow_motion.to,
+        slow_motion.duration_ms,
+        slow_motion.start_ms
+    );
     world.resource_mut::<Runtime>().engine.slow_motion = Some(slow_motion);
     Ok(Value::Undefined)
 }

@@ -234,7 +234,7 @@ pub fn capture_xmodel_skel_with_shared(
     shared: &SharedXModelSurfaces,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, Some(shared))
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, Some(shared), false)
 }
 
 pub fn capture_xmodel_skel(
@@ -244,7 +244,7 @@ pub fn capture_xmodel_skel(
     materials: Option<&MaterialCatalog>,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None)
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
 }
 
 pub fn capture_fpv_skel(
@@ -257,7 +257,7 @@ pub fn capture_fpv_skel(
     if model_kind(&name) != Some(ModelKind::Fpv) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None)
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
 }
 
 pub fn capture_body_skel(
@@ -270,7 +270,7 @@ pub fn capture_body_skel(
     if model_kind(&name) != Some(ModelKind::Soldier) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None)
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
 }
 
 pub fn capture_world_weapon_skel(
@@ -283,7 +283,7 @@ pub fn capture_world_weapon_skel(
     if model_kind(&name) != Some(ModelKind::WorldWeapon) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None)
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
 }
 
 pub fn capture_untyped_skel(
@@ -293,7 +293,18 @@ pub fn capture_untyped_skel(
     materials: Option<&MaterialCatalog>,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None)
+    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+}
+
+/// The skeleton (bones, pose, collision) without surfaces: enough for tag
+/// lookups on models whose surfaces live in another zone.
+pub fn capture_xmodel_bones(
+    stream: &ZoneStream<'_>,
+    strings: &ScriptStrings,
+    geometry: XModelGeometry,
+) -> Option<ModelSkel> {
+    let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
+    capture_model_skel_iw4(stream, strings, geometry, name, None, None, true)
 }
 
 fn capture_model_skel_iw4(
@@ -303,6 +314,7 @@ fn capture_model_skel_iw4(
     name: String,
     materials: Option<&MaterialCatalog>,
     shared: Option<&SharedXModelSurfaces>,
+    bones_only: bool,
 ) -> Option<ModelSkel> {
     let bone_names = geometry.bone_names?;
     let base_mat = geometry.base_mat?;
@@ -360,6 +372,9 @@ fn capture_model_skel_iw4(
     let mut any_surf = false;
 
     for lod in 0..4 {
+        if bones_only {
+            break;
+        }
         let Some(surfaces) = geometry.lod_xsurfaces[lod] else {
             let count = usize::from(geometry.lod_numsurfs[lod]);
             if count == 0 {
@@ -501,7 +516,7 @@ fn capture_model_skel_iw4(
         lod_surf_span[lod] = (u16::try_from(start).ok()?, u16::try_from(n).ok()?);
         any_surf = any_surf || n > 0;
     }
-    if !any_surf {
+    if !any_surf && !bones_only {
         return None;
     }
 

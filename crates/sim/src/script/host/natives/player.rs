@@ -310,6 +310,17 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             let menu: Arc<str> = string(args, 0)?.to_ascii_lowercase().into();
             if menu.contains("eog_summary") {
                 super::sp::eog_summary(world, &menu);
+                // The EOG menus read the summary from dvars the mission set globally.
+                let shared: Vec<(String, String)> = world
+                    .resource::<Runtime>()
+                    .dvars
+                    .iter()
+                    .filter(|(name, _)| super::sp::is_eog_dvar(name))
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                for (name, value) in shared {
+                    publish_client_dvar(world, client, &name, value);
+                }
             }
             if let Some(cs_index) = hud_iw4::script_menu_cs_index(&menu) {
                 FrameWorld::from_world(world).push_player_card_open(ClientId(client), cs_index);
@@ -551,6 +562,66 @@ fn item_number(world: &World, receiver: &Value) -> Result<i32, String> {
 }
 
 pub(crate) const SCAVENGER_ITEM_CLASS: &str = "scavenger_item";
+
+/// SP maps place weapons as `weapon_<name>` entities; the engine spawns them as
+/// pickups at load, which `_load::weapon_ammo` then fills (`itemweaponsetammo`).
+/// The map entity keeps its keys and becomes the item; its model is hidden.
+pub(crate) fn install_weapon_items(world: &mut World) {
+    if !super::super::players::single_player(world) {
+        return;
+    }
+    let placed: Vec<(u64, String)> = world
+        .resource::<Runtime>()
+        .entities
+        .iter()
+        .filter(|(_, e)| e.kind == super::super::entities::EntityKind::Map)
+        .filter_map(|(id, e)| Some((*id, e.classname.strip_prefix("weapon_")?.to_owned())))
+        .collect();
+    // Install runs before the first step; placed items are stationary.
+    let tick = world
+        .get_resource::<crate::step::StepRequest>()
+        .map_or(crate::Tick(0), |request| request.tick);
+    let mut items = 0;
+    for (id, name) in placed {
+        let Ok(weapon) = script_player::weapon_named(&FrameWorld::from_world(world), &name) else {
+            continue;
+        };
+        let (origin, yaw) = {
+            let mut runtime = world.resource_mut::<Runtime>();
+            let origin = match runtime.object_field(id, "origin") {
+                Value::Vector(v) => v,
+                _ => continue,
+            };
+            let yaw = match runtime.object_field(id, "angles") {
+                Value::Vector(v) => v[1],
+                _ => 0.0,
+            };
+            (origin, yaw)
+        };
+        let number = crate::item::spawn_weapon_item(
+            &mut FrameWorld::from_world(world),
+            tick,
+            weapon,
+            origin,
+            yaw,
+            playerstate_iw4::ENTITYNUM_NONE,
+            false,
+        );
+        if number == playerstate_iw4::ENTITYNUM_NONE {
+            continue;
+        }
+        let mut runtime = world.resource_mut::<Runtime>();
+        let entity = runtime.entities.get_mut(&id).unwrap();
+        entity.kind = super::super::entities::EntityKind::Item(number);
+        if let Some(presence) = entity.presence.take() {
+            runtime.retired_presence.push((presence, false));
+        }
+        items += 1;
+    }
+    if items > 0 {
+        diag::info!(Sim, "spec ops: {items} map weapons placed as pickups");
+    }
+}
 
 pub(crate) fn new_item_entity(
     world: &mut World,
@@ -830,6 +901,42 @@ pub(crate) fn link_to(
     Ok(Value::Undefined)
 }
 
+/// `PlayerLinkToBlend( ent, tag, time, accel, decel )`: the player ends up on the
+/// tag with the view locked to it. The engine eases the player there over `time`;
+/// here the player is placed on the tag at once.
+fn link_to_blend(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, String> {
+    let client = player(world, receiver)?;
+    let parent = super::engine::entity_id(world, arg(args, 0)?)?;
+    if world.resource::<Runtime>().player_client(parent) == Some(client) {
+        return Err("cannot link an entity to itself".into());
+    }
+    let tag = match args.get(1) {
+        None | Some(Value::Undefined) => None,
+        Some(_) => Some(string(args, 1)?),
+    }
+    .filter(|tag| !tag.is_empty() && !tag.eq_ignore_ascii_case("tag_origin"))
+    .map(Arc::<str>::from);
+    for index in 2..args.len().min(5) {
+        float(args, index)?;
+    }
+    let (_, axis) = super::super::players::link_parent_pose(world, parent, tag.as_deref());
+    super::super::players::link_player(
+        world,
+        client,
+        PlayerLink {
+            parent,
+            tag,
+            origin: [0.0; 3],
+            angles: [0.0; 3],
+            view: LinkView::Absolute,
+            clamp: None,
+            parent_angles: math_iw4::axis_to_angles(axis),
+            restore_view: None,
+        },
+    );
+    Ok(Value::Undefined)
+}
+
 fn flag(args: &[Value], index: usize) -> Result<bool, String> {
     Ok(optional(args, index, int)?.unwrap_or(1) != 0)
 }
@@ -909,6 +1016,10 @@ fn register_body(registry: &mut NativeRegistry) {
     registry.register(Method, "allowjump", |world, receiver, args| {
         let on = flag(args, 0)?;
         controls(world, receiver, |c| c.jump_disabled = !on)
+    });
+    registry.register(Method, "allowmelee", |world, receiver, args| {
+        let on = flag(args, 0)?;
+        controls(world, receiver, |c| c.melee_disabled = !on)
     });
     registry.register(Method, "canmantle", |world, receiver, args| {
         if !args.is_empty() {
@@ -1117,6 +1228,7 @@ fn register_body(registry: &mut NativeRegistry) {
     registry.register(Method, "playerlinktoabsolute", |world, receiver, args| {
         link_to(world, receiver, args, LinkView::Absolute)
     });
+    registry.register(Method, "playerlinktoblend", link_to_blend);
     for name in ["playerlinkedoffsetenable", "playerlinkedoffsetdisable"] {
         registry.register(Method, name, |world, receiver, _| {
             client_of(world, receiver)?;

@@ -713,7 +713,7 @@ impl AuthorityDObjState {
             .pose
             .bone_names
             .iter()
-            .position(|name| name == tag)?;
+            .position(|name| name.eq_ignore_ascii_case(tag))?;
         let posed = capability
             .pose(&self.pose_request, self.world_from_model)
             .ok()?;

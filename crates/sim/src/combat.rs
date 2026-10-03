@@ -1302,6 +1302,25 @@ pub(crate) fn phase_trace(
             && !pool.actors.is_empty()
         {
             pool.whizzes.push((em.origin, last.end, em.attacker));
+            let source = Some(crate::actor::EventSource::Attacker(em.attacker));
+            if em.pellet.0 == 0 {
+                pool.events.push(crate::actor::PendingEvent {
+                    kind: crate::actor::AiEvent::Gunshot,
+                    source,
+                    attacker: None,
+                    at: em.origin,
+                    end: None,
+                    weapon: em.weapon,
+                });
+            }
+            pool.events.push(crate::actor::PendingEvent {
+                kind: crate::actor::AiEvent::Bullet,
+                source,
+                attacker: None,
+                at: em.origin,
+                end: Some(last.end),
+                weapon: em.weapon,
+            });
         }
         let mut glass_hit: Vec<u32> = Vec::new();
         for segment in &segments {
@@ -1752,7 +1771,9 @@ fn fire_weapon_melee(
                         point: segment.end,
                         dir: forward,
                         bone: match segment.collider {
-                            Some(ColliderId::EntityDObjBone { bone, .. }) => Some(usize::from(bone)),
+                            Some(ColliderId::EntityDObjBone { bone, .. }) => {
+                                Some(usize::from(bone))
+                            }
                             _ => None,
                         },
                         flags: 0,

@@ -140,6 +140,10 @@ pub(crate) struct Actor {
     pub suppressed_ms: i64,
     pub suppressed_since: i64,
     pub pains: u32,
+    /// `animscripted`: the `scripted` animscript holds the actor until this time.
+    pub scripted_until_ms: i64,
+    /// `addaieventlistener`: the AI events this actor hears as `"ai_event"` notifies.
+    pub listeners: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -207,8 +211,10 @@ impl Actor {
             picked_up: None,
             suppression: 0.0,
             suppressed_ms: 0,
+            scripted_until_ms: 0,
             suppressed_since: 0,
             pains: 0,
+            listeners: 0,
         }
     }
 
@@ -255,6 +261,49 @@ pub(crate) struct ActorPool {
     pub grenades_thrown: u32,
     /// Bullet lines fired since the actors last looked (start, end, shooter).
     pub whizzes: Vec<([f32; 3], [f32; 3], crate::Attacker)>,
+    /// AI events (gunshots, explosions, pain, death, ...) waiting for the actors' next look.
+    pub events: Vec<PendingEvent>,
+    /// When each player last made a footstep event.
+    pub footsteps: BTreeMap<u32, i64>,
+}
+
+/// The engine's AI events (`ai_event_t`): what actors hear without seeing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AiEvent {
+    Footstep,
+    FootstepWalk,
+    FootstepSprint,
+    NewEnemy,
+    Pain,
+    Death,
+    Explosion,
+    GrenadePing,
+    ProjectilePing,
+    Gunshot,
+    GunshotTeammate,
+    SilencedShot,
+    Bullet,
+    ProjectileImpact,
+}
+
+/// Where an event came from: the entity that caused it (a shooter, a casualty, a
+/// grenade's thrower) or the attacker the combat pipeline reported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum EventSource {
+    Object(u64),
+    Attacker(crate::Attacker),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PendingEvent {
+    pub kind: AiEvent,
+    pub source: Option<EventSource>,
+    /// The casualty's attacker for pain and death.
+    pub attacker: Option<u64>,
+    pub at: [f32; 3],
+    /// Line events (bullets, projectile impacts) run from `at` to here.
+    pub end: Option<[f32; 3]>,
+    pub weapon: u32,
 }
 
 impl ActorPool {

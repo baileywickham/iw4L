@@ -1,5 +1,5 @@
 use super::animtree::ScriptAnimTree;
-use super::args::{arg, float, kind, optional, string};
+use super::args::{arg, float, kind, optional, string, vector};
 use super::arrays::new_array;
 use super::mechanics::Mechanics;
 use super::natives::engine::entity_id;
@@ -511,6 +511,76 @@ fn wrap_degrees(angle: f32) -> f32 {
     (angle + 180.0).rem_euclid(360.0) - 180.0
 }
 
+/// `startscriptedanim( notify, origin, angles, anim, mode, root )`: place the
+/// entity at the anim's start relative to origin/angles and play it flagged
+/// under root (the tree root when absent), so notetracks and "end" reach
+/// `notify`. No root motion is applied. Without an animtree on the entity only
+/// "end" is sent, after the anim's length.
+fn start_scripted_anim(
+    world: &mut World,
+    receiver: &Value,
+    args: &[Value],
+) -> Result<Value, String> {
+    let flag: Arc<str> = string(args, 0)?.into();
+    let origin = vector(args, 1)?;
+    let angles = vector(args, 2)?;
+    let clip = clip_named(world, args, 3)?;
+    let id = entity_id(world, receiver)?;
+    let trans = clip.abs_delta_trans(0.0);
+    let (forward, right, up) = math_iw4::angle_vectors(angles);
+    let start: [f32; 3] = std::array::from_fn(|i| {
+        origin[i] + forward[i] * trans[0] - right[i] * trans[1] + up[i] * trans[2]
+    });
+    let facing = [
+        angles[0],
+        wrap_degrees(angles[1] + clip.abs_delta_yaw(0.0)),
+        angles[2],
+    ];
+    let teleport = world
+        .resource::<NativeRegistry>()
+        .get(Namespace::Method, "teleport")
+        .ok_or("teleport is not bound")?;
+    if teleport(
+        world,
+        receiver,
+        &[Value::Vector(start), Value::Vector(facing)],
+    )
+    .is_err()
+    {
+        let mut runtime = world.resource_mut::<Runtime>();
+        runtime.set_object_field(id, "origin", Value::Vector(start));
+        runtime.set_object_field(id, "angles", Value::Vector(facing));
+    }
+    let played = with_anim(world, receiver, |anim| {
+        let target = node(anim, args, 3)?;
+        let root = match args.get(5) {
+            Some(Value::Animation { .. }) => node(anim, args, 5).unwrap_or(0),
+            _ => 0,
+        };
+        let root = if anim.tree.is_under(target, root) {
+            root
+        } else {
+            0
+        };
+        anim.set(
+            target,
+            Some(root),
+            1.0,
+            DEFAULT_BLEND,
+            1.0,
+            FLAGGED | KNOB | ALL | RESTART,
+            Some(flag.clone()),
+        )
+    });
+    if played.is_err() {
+        let due = super::players::now_ms(world) + (clip.duration() * 1000.0) as i64;
+        world
+            .resource_mut::<Mechanics>()
+            .notify_at(due, id, flag, vec![Value::string("end")]);
+    }
+    Ok(Value::Undefined)
+}
+
 pub(crate) fn register(registry: &mut NativeRegistry) {
     use Namespace::{Function, Method};
 
@@ -642,6 +712,45 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             delta[0] * sin + delta[1] * cos,
             delta[2],
         ]))
+    });
+    registry.register(Function, "getstartorigin", |world, _, args| {
+        let origin = vector(args, 0)?;
+        let angles = vector(args, 1)?;
+        let trans = clip_named(world, args, 2)?.abs_delta_trans(0.0);
+        let (forward, right, up) = math_iw4::angle_vectors(angles);
+        Ok(Value::Vector(std::array::from_fn(|i| {
+            origin[i] + forward[i] * trans[0] - right[i] * trans[1] + up[i] * trans[2]
+        })))
+    });
+    registry.register(Function, "getstartangles", |world, _, args| {
+        vector(args, 0)?;
+        let angles = vector(args, 1)?;
+        let yaw = clip_named(world, args, 2)?.abs_delta_yaw(0.0);
+        Ok(Value::Vector([
+            angles[0],
+            wrap_degrees(angles[1] + yaw),
+            angles[2],
+        ]))
+    });
+    // `animscripted( notify, origin, angles, anim, mode, root )`: an actor runs
+    // the `scripted` animscript, which calls `startscriptedanim`; anything else
+    // starts the anim directly.
+    registry.register(Method, "animscripted", |world, receiver, args| {
+        string(args, 0)?;
+        vector(args, 1)?;
+        vector(args, 2)?;
+        let duration = clip_named(world, args, 3)?.duration();
+        let duration_ms = (duration * 1000.0) as i64;
+        if super::actor_nav::begin_scripted(world, receiver, args, duration_ms).is_some() {
+            return Ok(Value::Undefined);
+        }
+        start_scripted_anim(world, receiver, args)
+    });
+    registry.register(Method, "startscriptedanim", start_scripted_anim);
+    registry.register(Method, "stopanimscripted", |world, receiver, _| {
+        entity_id(world, receiver)?;
+        super::actor_nav::end_scripted(world, receiver);
+        Ok(Value::Undefined)
     });
     registry.register(Function, "getangledelta", |world, _, args| {
         let clip = clip_named(world, args, 0)?;

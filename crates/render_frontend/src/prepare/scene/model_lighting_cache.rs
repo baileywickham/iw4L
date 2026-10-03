@@ -117,6 +117,7 @@ impl WorldModelLightingCache {
         (images, tile_writes): (&mut Assets<Image>, &mut ModelLightingAtlasTileWrites),
         lookup_fallback: u8,
         allow_moved_reuse: bool,
+        grid_intensity: f32,
     ) -> u32 {
         let dims = atlas.dims;
         let base = dims.smodel_entry_limit;
@@ -198,7 +199,8 @@ impl WorldModelLightingCache {
                 origin,
                 lookup_fallback,
             ) {
-                Ok(sampled) => {
+                Ok(mut sampled) => {
+                    apply_light_grid_intensity(&mut sampled, grid_intensity);
                     if key == ModelLightingOwner::Eye {
                         self.eye_atpoint_path = Some(format!("{:?}", sampled.path));
                         self.eye_live_corners = Some(sampled.live_corners as u8);
@@ -213,11 +215,19 @@ impl WorldModelLightingCache {
                             self.logged_fpv_atpoint = true;
                             diag::info!(
                                 World,
-                                "fpv AtPoint origin={:?} primary={} path={:?} live={} need_sample=1",
+                                "fpv AtPoint origin={:?} primary={} path={:?} live={} need_sample=1 raw={} fallback={} corners={:?} weights={:?} needs_trace={} sight={}/{} compressed={:?}",
                                 origin,
                                 sampled.picked_primary,
                                 sampled.path,
-                                sampled.live_corners
+                                sampled.live_corners,
+                                sampled.picked_before_remap,
+                                lookup_fallback,
+                                sampled.corner_primaries,
+                                sampled.weights,
+                                sampled.needs_trace_flag,
+                                sampled.corners_sight_cleared,
+                                sampled.corners_needing_sight,
+                                sampled.compressed
                             );
                         }
                     }
@@ -312,6 +322,40 @@ pub fn viewmodel_lighting_origin(
     lighting_iw4::viewmodel_lighting_origin(origin, view_height_current, view_yaw, leanf)
 }
 
+/// `r_lightGridEnableTweaks` + `r_lightGridIntensity`, which SP map scripts set
+/// (trainer 1.2, favela 1.5): scale the colors a dynamic model reads from the grid.
+fn apply_light_grid_intensity(sampled: &mut asset_model::SampledLighting, intensity: f32) {
+    if intensity == 1.0 {
+        return;
+    }
+    let scale = |c: &mut u8| *c = (f32::from(*c) * intensity).round().clamp(0.0, 255.0) as u8;
+    sampled.colors.iter_mut().for_each(scale);
+    sampled.compressed.iter_mut().for_each(scale);
+    for texel in sampled.tile.chunks_exact_mut(4) {
+        texel[..3].iter_mut().for_each(scale);
+    }
+}
+
+/// The light grid intensity the script asked for, or 1 when tweaks are off.
+fn light_grid_intensity(presented: Option<&net::PresentedSnapshot>) -> f32 {
+    let Some(snapshot) = presented.and_then(|p| p.snapshot()) else {
+        return 1.0;
+    };
+    let dvar = |name: &str| {
+        snapshot
+            .meta
+            .objectives
+            .server_info
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .and_then(|(_, value)| value.trim().parse::<f32>().ok())
+    };
+    if dvar("r_lightgridenabletweaks").unwrap_or(0.0) == 0.0 {
+        return 1.0;
+    }
+    dvar("r_lightgridintensity").unwrap_or(1.0).max(0.0)
+}
+
 pub(crate) fn begin_dyn_model_lighting_frame(
     cache: Option<ResMut<WorldModelLightingCache>>,
     mut requests: ResMut<ModelLightingRequests>,
@@ -384,6 +428,7 @@ pub(crate) fn update_dirty_model_lighting(
     tile_writes: ResMut<ModelLightingAtlasTileWrites>,
     requests: ResMut<ModelLightingRequests>,
     resolved: ResMut<ResolvedModelLightingTable>,
+    presented: Option<Res<net::PresentedSnapshot>>,
 ) {
     drain_model_lighting_requests(
         cache,
@@ -392,6 +437,7 @@ pub(crate) fn update_dirty_model_lighting(
         (images, tile_writes),
         requests,
         resolved,
+        light_grid_intensity(presented.as_deref()),
         false,
     );
 }
@@ -404,6 +450,7 @@ pub(crate) fn update_glass_dyn_lighting(
     tile_writes: ResMut<ModelLightingAtlasTileWrites>,
     requests: ResMut<ModelLightingRequests>,
     resolved: ResMut<ResolvedModelLightingTable>,
+    presented: Option<Res<net::PresentedSnapshot>>,
 ) {
     drain_model_lighting_requests(
         cache,
@@ -412,6 +459,7 @@ pub(crate) fn update_glass_dyn_lighting(
         (images, tile_writes),
         requests,
         resolved,
+        light_grid_intensity(presented.as_deref()),
         true,
     );
 }
@@ -424,6 +472,7 @@ pub(crate) fn update_fx_dyn_lighting(
     tile_writes: ResMut<ModelLightingAtlasTileWrites>,
     requests: ResMut<ModelLightingRequests>,
     resolved: ResMut<ResolvedModelLightingTable>,
+    presented: Option<Res<net::PresentedSnapshot>>,
 ) {
     drain_model_lighting_requests(
         cache,
@@ -432,6 +481,7 @@ pub(crate) fn update_fx_dyn_lighting(
         (images, tile_writes),
         requests,
         resolved,
+        light_grid_intensity(presented.as_deref()),
         false,
     );
 }
@@ -443,6 +493,7 @@ fn drain_model_lighting_requests(
     (mut images, mut tile_writes): (ResMut<Assets<Image>>, ResMut<ModelLightingAtlasTileWrites>),
     mut requests: ResMut<ModelLightingRequests>,
     mut resolved: ResMut<ResolvedModelLightingTable>,
+    grid_intensity: f32,
     prune_glass: bool,
 ) {
     let pending = requests.take_pending();
@@ -482,6 +533,7 @@ fn drain_model_lighting_requests(
                 (&mut images, &mut tile_writes),
                 request.lookup_fallback,
                 moving_glass,
+                grid_intensity,
             );
             if handle == 0 {
                 if request.owner == ModelLightingOwner::Eye {

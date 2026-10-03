@@ -120,6 +120,7 @@ impl Plugin for HudPlugin {
                             crate::use_hint::update,
                             update_hud_elems,
                             update_targetmap,
+                            crate::menus::merge_mission_menus,
                             crate::menus::update_script_menus,
                             hud_stage_close::<7>,
                         )

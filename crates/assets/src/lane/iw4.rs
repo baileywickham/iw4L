@@ -703,6 +703,7 @@ impl ZoneLane for Iw4Lane {
                         static_model_meshes,
                         static_model_instances,
                         map_xmodel_scene_assets,
+                        sp_model_skeletons: Default::default(),
                         script_model_instances,
                         script_brush_models,
                         flag_descriptors,
@@ -1371,6 +1372,7 @@ pub(crate) fn walk_script_zone(
             world_weapons,
             xanims,
             bodies,
+            skeletons,
             ..
         } = *capture;
         weapons.resolve_reticles(&sink.materials);
@@ -1390,6 +1392,7 @@ pub(crate) fn walk_script_zone(
             xanims,
             materials: Some(std::mem::take(&mut sink.materials)),
             bodies,
+            skeletons,
         };
     }
     walk

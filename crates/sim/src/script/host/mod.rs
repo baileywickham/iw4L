@@ -1,5 +1,6 @@
 pub(crate) mod actor_combat;
 pub(crate) mod actor_cover;
+pub(crate) mod actor_events;
 pub(crate) mod actor_grenade;
 pub(crate) mod actor_nav;
 pub(crate) mod actors;
@@ -27,6 +28,7 @@ pub mod spectators;
 pub mod tables;
 pub mod triggers;
 pub mod turrets;
+pub(crate) mod vehicle_drive;
 pub mod vehicles;
 pub mod weapons;
 

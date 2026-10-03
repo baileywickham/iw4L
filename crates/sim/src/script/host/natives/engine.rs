@@ -590,6 +590,9 @@ fn team_clients(world: &mut World, team: &str, except: Option<u32>) -> Vec<crate
         .collect()
 }
 
+/// How long after `playsound( alias, notify )` the notify fires.
+const SOUND_DONE_MS: i64 = 2500;
+
 pub(crate) fn play_sound_at(
     world: &mut World,
     origin: [f32; 3],
@@ -634,6 +637,12 @@ fn radius_damage(
         }
         _ => 0,
     };
+    super::super::actor_events::push(
+        world,
+        crate::actor::AiEvent::Explosion,
+        attacker.map(crate::actor::EventSource::Attacker),
+        origin,
+    );
     runtime(world)
         .blasts
         .push(super::super::entity_damage::ScriptBlast {
@@ -1044,7 +1053,10 @@ fn register_placement(registry: &mut NativeRegistry) {
             None if tag.eq_ignore_ascii_case("tag_origin") => {
                 Ok(Value::Vector(vector_field(world, id, "angles")))
             }
-            None => Err(format!("tag '{tag}' does not exist on entity")),
+            None => Err(format!(
+                "tag '{tag}' does not exist on entity ({})",
+                super::super::presence::tag_miss(world, id)
+            )),
         }
     });
     registry.register(Method, "getvelocity", |world, receiver, _| {
@@ -1593,13 +1605,25 @@ fn register_sound_and_fx(registry: &mut NativeRegistry) {
     });
     for name in ["playsound", "playsoundasmaster"] {
         registry.register(Method, name, |world, receiver, args| {
-            entity_id(world, receiver)?;
+            let object = entity_id(world, receiver)?;
             let alias = string(args, 0)?;
+            // SP `playsound( alias, notify, stoppable )`: the notify fires when the
+            // sound ends. Sound lengths are not known here, so it fires after
+            // SOUND_DONE_MS (next frame when the alias does not exist).
+            let done = match args.get(1) {
+                None | Some(Value::Undefined) => None,
+                Some(_) => Some(string(args, 1)?),
+            };
             let origin = origin_of(world, receiver)?;
-            play_sound_at(world, origin, &alias)?;
-            if args.len() != 1 {
-                return Err("expected one sound alias argument".into());
+            let played = play_sound_at(world, origin, &alias);
+            if let Some(done) = done {
+                let now = super::super::players::now_ms(world);
+                let after = if played.is_ok() { SOUND_DONE_MS } else { 0 };
+                world
+                    .resource_mut::<super::super::mechanics::Mechanics>()
+                    .notify_at(now + after, object, done.into(), Vec::new());
             }
+            played?;
             Ok(Value::Undefined)
         });
     }

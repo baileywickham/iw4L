@@ -7,7 +7,14 @@ use bevy_ecs::prelude::World;
 use gamemode_iw4::Team;
 
 const MAX_OBJECTIVES: i32 = 32;
-const ENGINE_SERVER_INFO: &[&str] = &["ui_bomb_timer", "mapname", "g_gametype"];
+const ENGINE_SERVER_INFO: &[&str] = &[
+    "ui_bomb_timer",
+    "mapname",
+    "g_gametype",
+    "r_lightgridenabletweaks",
+    "r_lightgridintensity",
+    "r_lightgridcontrast",
+];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ScriptObjective {

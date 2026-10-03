@@ -186,9 +186,53 @@ pub(crate) fn settle_collision(world: &mut World) {
     }
 }
 
+/// Gives a presence the entity's model now when it has none yet: a vehicle
+/// spawned this frame is asked for its tags (`tag_driver`) before the
+/// end-of-frame `present`.
+fn present_model_now(world: &mut World, object: u64) {
+    let Some(presence) = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .and_then(|e| e.presence)
+    else {
+        return;
+    };
+    if FrameWorld::from_world(world)
+        .collision_owner_mut(presence)
+        .is_none_or(|row| row.dobj.is_some())
+    {
+        return;
+    }
+    let mut runtime = world.resource_mut::<Runtime>();
+    let Some(model) = model_field(&mut runtime, object) else {
+        return;
+    };
+    let fields = (runtime.symbol("origin"), runtime.symbol("angles"));
+    let pose = runtime
+        .entities
+        .get(&object)
+        .and_then(|entity| entity_pose(&runtime, object, entity, fields))
+        .map(|(_, pose)| pose);
+    let Some((origin, angles, _, _)) = pose else {
+        return;
+    };
+    let mut frame = FrameWorld::from_world(world);
+    let capability = frame.model_capability(&model).flatten();
+    if let Some(row) = frame.collision_owner_mut(presence)
+        && row.dobj.is_none()
+    {
+        row.dobj = Some(AuthorityDObjState::at_pose(
+            &model, capability, origin, angles,
+        ));
+        row.followed_pose = Some((origin, angles));
+    }
+}
+
 /// `settle_collision` for one entity's row: a tag query only reads its own
 /// pose, and settling every row per query was the perception path's cost.
 fn settle_one(world: &mut World, object: u64) {
+    present_model_now(world, object);
     let mut runtime = world.resource_mut::<Runtime>();
     let fields = (runtime.symbol("origin"), runtime.symbol("angles"));
     let Some((presence, pose)) = runtime
@@ -323,6 +367,7 @@ fn present(world: &mut World, now: i32) {
 }
 
 fn tag_lookup(world: &mut World, object: u64, tag: &str) -> Option<Option<[f32; 3]>> {
+    present_model_now(world, object);
     let presence = world
         .resource::<Runtime>()
         .entities
@@ -371,6 +416,35 @@ pub(crate) fn tag_world(
             axis(matrix.z_axis),
         ],
     ))
+}
+
+/// Why `tag_world` found nothing: the entity's model and whether it has a skeleton.
+pub(crate) fn tag_miss(world: &mut World, object: u64) -> String {
+    let Some(presence) = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .and_then(|e| e.presence)
+    else {
+        return "no model presence".into();
+    };
+    let frame = FrameWorld::from_world(world);
+    match frame
+        .entity_collision_capabilities()
+        .iter()
+        .find(|row| row.owner.script_model() == Some(presence))
+        .and_then(|row| row.dobj.as_ref())
+    {
+        None => "no model".into(),
+        Some(dobj) => match &dobj.capability {
+            None => format!("model '{}' has no skeleton loaded", dobj.current_model),
+            Some(c) => format!(
+                "model '{}' has {} bones",
+                dobj.current_model,
+                c.pose.bone_names.len()
+            ),
+        },
+    }
 }
 
 pub(crate) fn tag_offset(world: &mut World, object: u64, tag: &str) -> Option<[f32; 3]> {

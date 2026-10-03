@@ -909,12 +909,96 @@ pub(crate) fn contains_point(world: &mut World, volume_entity: u64, point: [f32;
     inside.unwrap_or(false)
 }
 
+impl Volume<'_> {
+    /// World bounds, for the trigger log.
+    fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        match *self {
+            Volume::Cylinder {
+                origin,
+                radius,
+                height,
+            } => Some((
+                [origin[0] - radius, origin[1] - radius, origin[2]],
+                [origin[0] + radius, origin[1] + radius, origin[2] + height],
+            )),
+            Volume::Box { mins, maxs } => Some((mins, maxs)),
+            Volume::Hulls { origin, hulls } => hulls.iter().fold(None, |acc, hull| {
+                let lo = std::array::from_fn(|i| origin[i] + hull.mid[i] - hull.half[i]);
+                let hi = std::array::from_fn(|i| origin[i] + hull.mid[i] + hull.half[i]);
+                Some(match acc {
+                    None => (lo, hi),
+                    Some((a, b)) => (
+                        std::array::from_fn(|i| f32::min(a[i], lo[i])),
+                        std::array::from_fn(|i| f32::max(b[i], hi[i])),
+                    ),
+                })
+            }),
+            Volume::Brushes { .. } => None,
+        }
+    }
+}
+
+/// `IW4L_TRIGGER_LOG=1`: logs every named trigger's world bounds once, so a
+/// scripted run can teleport into a mission's start trigger.
+fn log_triggers(runtime: &mut Runtime, frame: &FrameWorld) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if !std::env::var("IW4L_TRIGGER_LOG").is_ok_and(|v| v == "1") {
+        return;
+    }
+    ONCE.call_once(|| {
+        let triggers: Vec<(u64, String)> = runtime
+            .entities
+            .iter()
+            .filter(|(_, e)| fires(&e.classname).is_some())
+            .map(|(id, e)| (*id, e.classname.to_string()))
+            .collect();
+        for (trigger, classname) in triggers {
+            let names: Vec<String> = [
+                "targetname",
+                "script_flag",
+                "script_noteworthy",
+                "script_slowmo_breach",
+            ]
+            .iter()
+            .filter_map(|key| match runtime.object_field(trigger, key) {
+                Value::String(text) => Some(format!("{key}={text}")),
+                Value::Int(n) => Some(format!("{key}={n}")),
+                _ => None,
+            })
+            .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let shape = volume(runtime, frame, trigger);
+            let bounds = shape.and_then(|v| v.bounds());
+            let mut text = bounds.map_or("brushes".to_owned(), |(lo, hi)| {
+                format!(
+                    "{:.0} {:.0} {:.0} .. {:.0} {:.0} {:.0}",
+                    lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]
+                )
+            });
+            if let Some(Volume::Hulls { origin, hulls }) = shape {
+                for hull in hulls {
+                    let at: [f32; 3] = std::array::from_fn(|i| origin[i] + hull.mid[i]);
+                    text += &format!(" | hull {:.0} {:.0} {:.0}", at[0], at[1], at[2]);
+                }
+            }
+            diag::info!(
+                Sim,
+                "trigger: {classname} {} bounds {text}",
+                names.join(" ")
+            );
+        }
+    });
+}
+
 pub(crate) fn dispatch_triggers(world: &mut World) {
     refresh_claims(world);
     let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());
     let mut raised = Vec::new();
     {
         let mut frame = FrameWorld::from_world(world);
+        log_triggers(&mut runtime, &frame);
         let mut players: Vec<(u32, u64, bool)> = Vec::new();
         for (client, slot) in &runtime.players {
             let id = crate::ClientId(*client);

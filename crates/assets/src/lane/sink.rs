@@ -1164,6 +1164,10 @@ impl AssetLinkSink for ZoneWalkSink {
         if self.capture_weapons && ty == AssetType::Weapon {
             self.weapons.capture(stream);
         }
+        // SP maps carry their own VehicleDefs (turret weapon, compass icons).
+        if self.capture_weapons && ty == AssetType::Vehicle {
+            self.weapons.capture_vehicle(stream);
+        }
         if ty == AssetType::XModel {
             if self.capture_weapons {
                 self.world_weapons.capture(stream, &self.materials);
@@ -1589,6 +1593,9 @@ pub(crate) struct WeaponZoneCapture {
     pub world_weapons: WorldWeaponBuild,
     pub xanims: XAnimBuild,
     pub bodies: BodyMeshBuild,
+    /// Skeletons of the zone's XModels, for the sim's tag lookups.
+    pub skeletons: asset_world::MapXModelSceneCatalog,
+    strings: ScriptStrings,
     xmodel_names: HashMap<Ptr, Ptr>,
     xmodel_surfaces: HashMap<Ptr, Ptr>,
     xmodel_surface_names: HashMap<Ptr, Ptr>,
@@ -1657,6 +1664,7 @@ impl AssetSink for MaterialPopulationSink {
             capture.world_weapons.set_strings(strings);
             capture.xanims.set_strings(strings);
             capture.bodies.set_strings(strings);
+            capture.strings = strings;
         }
     }
 
@@ -1697,10 +1705,23 @@ impl AssetLinkSink for MaterialPopulationSink {
             if ty == AssetType::Weapon {
                 capture.weapons.capture(stream);
             }
+            if ty == AssetType::Vehicle {
+                capture.weapons.capture_vehicle(stream);
+            }
             if ty == AssetType::XModel {
                 capture.fpv_meshes.capture(stream, &self.materials);
                 capture.world_weapons.capture(stream, &self.materials);
                 capture.bodies.capture(stream, &self.materials);
+                if let Some(geometry) = stream.xmodel()
+                    && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
+                    && let Some(skel) =
+                        asset_model::capture_xmodel_bones(stream, &capture.strings, geometry)
+                {
+                    capture.skeletons.insert(
+                        asset_world::MapXModelAssetKey(name.to_owned()),
+                        asset_world::MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel)),
+                    );
+                }
             }
         }
         Ok(())

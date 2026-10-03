@@ -21,8 +21,8 @@ const SENSE_TICKS: i64 = 2;
 const SIGHT_BUDGET: u32 = 24;
 /// A known enemy not seen or reported for this long is forgotten.
 const FORGET_MS: i64 = 20_000;
-/// Squadmates this close hear about what an actor sees.
-const SHARE_DIST: f32 = 768.0;
+/// Squadmates this close hear about the enemy an actor sees (`ai_eventDistNewEnemy`).
+const NEW_ENEMY_DIST: f32 = 1024.0;
 const RECENT_ATTACKER_MS: i64 = 4000;
 /// The death animscript gets this long before the body becomes a corpse anyway.
 const DEATH_TIMEOUT_MS: i64 = 8000;
@@ -69,7 +69,7 @@ fn health(world: &mut World, object: u64) -> i32 {
     number_field(world, object, "health").unwrap_or(0.0) as i32
 }
 
-fn label(world: &World, object: u64) -> String {
+pub(crate) fn label(world: &World, object: u64) -> String {
     let runtime = world.resource::<Runtime>();
     match runtime.player_client(object) {
         Some(client) => format!("player {client}"),
@@ -172,19 +172,26 @@ fn set_enemy(world: &mut World, id: ActorId, object: u64, enemy: Option<u64>) {
     if let Some(enemy) = enemy {
         let from = origin(world, object);
         let to = origin(world, enemy);
+        let visible = super::sentients::max_visible_dist(world, enemy);
+        let client = world.resource::<Runtime>().player_client(enemy);
+        let stance = client.map_or("", |client| {
+            crate::script_player::stance(&FrameWorld::from_world(world), crate::ClientId(client))
+        });
         diag::info!(
             Sim,
-            "actor: {} acquired enemy {} dist={:.0}",
+            "actor: {} acquired enemy {} dist={:.0} maxvisibledist={visible:.0} {stance}",
             label(world, object),
             label(world, enemy),
             length(sub(to, from))
         );
+    } else {
+        diag::info!(Sim, "actor: {} has no enemy", label(world, object));
     }
     raise(world, Value::Object(object), "enemy", Vec::new());
 }
 
 /// Records that `id` knows where `target` is now; `seen` when by its own eyes.
-fn learn(world: &mut World, id: ActorId, target: u64, seen: bool, now: i64) {
+pub(crate) fn learn(world: &mut World, id: ActorId, target: u64, seen: bool, now: i64) {
     let pos = origin(world, target);
     let sight = seen.then(|| eye(world, target));
     if let Some(a) = world.resource_mut::<ActorPool>().actors.get_mut(&id) {
@@ -203,9 +210,11 @@ fn learn(world: &mut World, id: ActorId, target: u64, seen: bool, now: i64) {
     }
 }
 
-/// Squadmates near `id` that do not already know better hear about `target`.
+/// `AI_EV_NEW_ENEMY`: squadmates within `ai_eventDistNewEnemy` of `id` that do not
+/// already know better hear about the enemy it sees.
 fn share(world: &mut World, id: ActorId, object: u64, target: u64, now: i64) {
     let at = origin(world, object);
+    let dist = dvar_float(world, "ai_eventDistNewEnemy").unwrap_or(NEW_ENEMY_DIST);
     let team = match world.resource::<ActorPool>().actors.get(&id) {
         Some(a) => a.team.clone(),
         None => return,
@@ -219,7 +228,7 @@ fn share(world: &mut World, id: ActorId, object: u64, target: u64, now: i64) {
         .map(|(other, a)| (*other, a.object))
         .collect();
     for (mate, mate_object) in mates {
-        if length(sub(origin(world, mate_object), at)) <= SHARE_DIST {
+        if length(sub(origin(world, mate_object), at)) <= dist {
             learn(world, mate, target, false, now);
         }
     }
@@ -283,9 +292,6 @@ fn sense(
             seen_any.push(target.object);
         }
     }
-    for target in seen_any {
-        share(world, id, object, target, now);
-    }
     let at = origin(world, object);
     let known: Vec<(u64, Known)> = world
         .resource::<ActorPool>()
@@ -329,7 +335,13 @@ fn sense(
             a.known.remove(target);
         }
     }
-    set_enemy(world, id, object, best.map(|(_, t)| t));
+    let enemy = best.map(|(_, t)| t);
+    set_enemy(world, id, object, enemy);
+    if let Some(enemy) = enemy
+        && seen_any.contains(&enemy)
+    {
+        share(world, id, object, enemy, now);
+    }
 }
 
 /// Perception for every live actor, then the dying: death animscripts that have
@@ -384,7 +396,7 @@ fn segment_dist(point: [f32; 3], start: [f32; 3], end: [f32; 3]) -> (f32, f32) {
     (length(sub(point, closest)), t)
 }
 
-fn shooter_object(world: &World, attacker: crate::Attacker) -> Option<u64> {
+pub(crate) fn shooter_object(world: &World, attacker: crate::Attacker) -> Option<u64> {
     let runtime = world.resource::<Runtime>();
     match attacker {
         crate::Attacker::Client(client) => runtime.players.get(&client.0).map(|s| s.object),
@@ -679,6 +691,14 @@ pub(crate) fn damage(
         kill_actor(world, id, object, attacker, means, weapon);
         return;
     }
+    let at = origin(world, object);
+    super::actor_events::push_casualty(
+        world,
+        crate::actor::AiEvent::Pain,
+        object,
+        attacker_object,
+        at,
+    );
     let busy = world
         .resource::<ActorPool>()
         .actors
@@ -754,6 +774,18 @@ pub(crate) fn kill_actor(
         Sim,
         "actor: {} died by {by} means={means} weapon={weapon} shots_fired={shots}",
         label(world, object)
+    );
+    let at = origin(world, object);
+    let attacker_object = match attacker {
+        Value::Object(o) => Some(o),
+        _ => None,
+    };
+    super::actor_events::push_casualty(
+        world,
+        crate::actor::AiEvent::Death,
+        object,
+        attacker_object,
+        at,
     );
     raise(
         world,
@@ -836,11 +868,11 @@ fn accuracy_at(dist: f32) -> f32 {
     GRAPH[GRAPH.len() - 1].1
 }
 
-fn dvar_float(world: &World, name: &str) -> Option<f32> {
+pub(crate) fn dvar_float(world: &World, name: &str) -> Option<f32> {
     world
         .resource::<Runtime>()
         .dvars
-        .get(name)
+        .get(&name.to_ascii_lowercase())
         .and_then(|text| text.trim().parse::<f32>().ok())
 }
 
