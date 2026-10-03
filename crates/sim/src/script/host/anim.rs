@@ -7,7 +7,10 @@ use crate::frame::FrameWorld;
 use crate::script::{Arc, Namespace, NativeRegistry, Runtime, Value};
 use anim_iw4::{XANIM_NONLOOP_END_PARK, XANIM_WEIGHT_FLOOR};
 use bevy_ecs::prelude::World;
-use xmodel_runtime::{AnimClip, XAnimNodeId, XAnimNodeState, XAnimTreeRuntime};
+use xmodel_runtime::{
+    AnimClip, XAnimNodeDefinition, XAnimNodeId, XAnimNodeKind, XAnimNodeState, XAnimSemanticNode,
+    XAnimSemanticNodeKind, XAnimTreeDefinition, XAnimTreeRuntime,
+};
 
 const FLAGGED: u8 = 1;
 const KNOB: u8 = 2;
@@ -175,6 +178,73 @@ impl EntityAnim {
         self.free_idle_nodes()
     }
 
+    /// The part of the tree that reaches the pose: weighted nodes under
+    /// weighted ancestors that lead to a clip. State is cut to time and
+    /// weight (the rest stays default and costs no wire bytes), so an
+    /// unchanged pose compares equal from tick to tick.
+    fn active_pose(&self) -> Result<Option<(Vec<XAnimSemanticNode>, XAnimTreeRuntime)>, String> {
+        let states = self.runtime.states();
+        let defs = self.tree.definition.nodes();
+        let mut on = vec![false; defs.len()];
+        for node in 0..defs.len() {
+            on[node] = states[node].weight > 0.0
+                && defs[node].parent.is_none_or(|parent| on[parent.0 as usize]);
+        }
+        let mut keep = vec![false; defs.len()];
+        for node in (0..defs.len()).rev() {
+            keep[node] =
+                on[node] && (keep[node] || matches!(defs[node].kind, XAnimNodeKind::Leaf { .. }));
+            if let (true, Some(parent)) = (keep[node], defs[node].parent) {
+                keep[parent.0 as usize] = true;
+            }
+        }
+        let mut remap = vec![u16::MAX; defs.len()];
+        let mut nodes = Vec::new();
+        let mut definition = Vec::new();
+        for node in (0..defs.len()).filter(|node| keep[*node]) {
+            remap[node] = nodes.len() as u16;
+            let parent = defs[node]
+                .parent
+                .map(|parent| XAnimNodeId(remap[parent.0 as usize]));
+            let (kind, clip, parts) = match &defs[node].kind {
+                XAnimNodeKind::Blend => (XAnimSemanticNodeKind::Blend, None, None),
+                XAnimNodeKind::Additive => (XAnimSemanticNodeKind::Additive, None, None),
+                XAnimNodeKind::Leaf { parts, .. } => (
+                    XAnimSemanticNodeKind::Leaf,
+                    Some(self.tree.nodes[node].name.to_string()),
+                    *parts,
+                ),
+            };
+            let state = XAnimNodeState {
+                time: states[node].time,
+                weight: states[node].weight,
+                ..XAnimNodeState::default()
+            };
+            nodes.push(XAnimSemanticNode {
+                parent,
+                kind,
+                clip,
+                parts,
+                state,
+            });
+            definition.push(XAnimNodeDefinition {
+                parent,
+                kind: defs[node].kind.clone(),
+            });
+        }
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+        let definition = XAnimTreeDefinition::new(definition).map_err(|e| e.to_string())?;
+        let mut runtime = XAnimTreeRuntime::new(Arc::new(definition));
+        for (node, semantic) in nodes.iter().enumerate() {
+            runtime
+                .set_state(XAnimNodeId(node as u16), semantic.state)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(Some((nodes, runtime)))
+    }
+
     fn dominant_leaf(&self, node: u16) -> Option<u16> {
         let states = self.runtime.states();
         let mut best: Option<(f32, u16)> = None;
@@ -305,6 +375,41 @@ pub(crate) fn advance_anims(world: &mut World, dtime: f32) {
                 .extend(notes.into_iter().map(|(flag, note)| (object, flag, note)));
         }
     });
+}
+
+/// Put each animated entity's active tree on its DObj: the snapshot carries
+/// it to clients and the authority poses bullet collision and tags with it.
+pub(crate) fn publish_anims(world: &mut World) {
+    let runtime = world.resource::<Runtime>();
+    let mechanics = world.resource::<Mechanics>();
+    let mut poses = Vec::new();
+    for (object, entity) in &runtime.entities {
+        let Some(presence) = entity.presence else {
+            continue;
+        };
+        let pose = match mechanics.anims.get(object).map(EntityAnim::active_pose) {
+            Some(Ok(pose)) => pose,
+            Some(Err(error)) => {
+                diag::warn!(
+                    Sim,
+                    "gsc: animtree pose on entity {}: {error}",
+                    entity.number
+                );
+                None
+            }
+            None => None,
+        };
+        poses.push((presence, pose));
+    }
+    let mut frame = FrameWorld::from_world(world);
+    for (presence, pose) in poses {
+        if let Some(dobj) = frame
+            .collision_owner_mut(presence)
+            .and_then(|row| row.dobj.as_mut())
+        {
+            dobj.set_script_tree(pose);
+        }
+    }
 }
 
 fn anim_value(args: &[Value], index: usize) -> Result<(Arc<str>, Arc<str>), String> {

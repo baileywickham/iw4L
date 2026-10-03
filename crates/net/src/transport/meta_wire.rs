@@ -2472,6 +2472,14 @@ fn encode_entity_state(out: &mut WireWriter, es: &entity_iw4::EntityState) {
         out.put_f32(v);
     }
     out.put_i32(es.index);
+    match es.solid {
+        0 => out.put_u8(0),
+        entity_iw4::SCRIPT_MOVER_BMODEL_SOLID => out.put_u8(1),
+        solid => {
+            out.put_u8(2);
+            out.put_u32(solid);
+        }
+    }
     out.put_i32(es.launch_time());
     out.put_i32(es.client_num);
 
@@ -2514,6 +2522,12 @@ fn decode_entity_state(input: &mut WireReader<'_>) -> Result<entity_iw4::EntityS
     es.apos_tr_delta = [input.get_f32()?, input.get_f32()?, input.get_f32()?];
     es.apos_tr_base = [input.get_f32()?, input.get_f32()?, input.get_f32()?];
     es.index = input.get_i32()?;
+    es.solid = match input.get_u8()? {
+        0 => 0,
+        1 => entity_iw4::SCRIPT_MOVER_BMODEL_SOLID,
+        2 => input.get_u32()?,
+        _ => return Err(WireError::Malformed("unknown entity solid tag")),
+    };
     es.set_launch_time(input.get_i32()?);
     es.client_num = input.get_i32()?;
     es.legs_anim = input.get_i32()?;
@@ -2851,15 +2865,7 @@ fn encode_entity_dobjs(
                     });
                     put_optional_text(out, node.clip.as_deref());
                     put_optional_part_bits(out, node.parts);
-                    let state = node.state;
-                    out.put_f32(state.time);
-                    out.put_f32(state.old_time);
-                    out.put_i32(i32::from(state.cycle_count));
-                    out.put_i32(i32::from(state.old_cycle_count));
-                    out.put_f32(state.goal_time);
-                    out.put_f32(state.goal_weight);
-                    out.put_f32(state.weight);
-                    out.put_f32(state.rate);
+                    put_xanim_node_state(out, node.state);
                 }
             }
         }
@@ -2914,27 +2920,12 @@ fn decode_entity_dobjs(
                     };
                     let clip = get_optional_text(input)?;
                     let parts = get_optional_part_bits(input)?;
-                    let time = input.get_f32()?;
-                    let old_time = input.get_f32()?;
-                    let cycle_count = i16::try_from(input.get_i32()?)
-                        .map_err(|_| WireError::Malformed("XAnim cycle count overflow"))?;
-                    let old_cycle_count = i16::try_from(input.get_i32()?)
-                        .map_err(|_| WireError::Malformed("XAnim old cycle count overflow"))?;
                     nodes.push(xmodel_runtime::XAnimSemanticNode {
                         parent: (parent != u16::MAX).then_some(xmodel_runtime::XAnimNodeId(parent)),
                         kind,
                         clip,
                         parts,
-                        state: xmodel_runtime::XAnimNodeState {
-                            time,
-                            old_time,
-                            cycle_count,
-                            old_cycle_count,
-                            goal_time: input.get_f32()?,
-                            goal_weight: input.get_f32()?,
-                            weight: input.get_f32()?,
-                            rate: input.get_f32()?,
-                        },
+                        state: get_xanim_node_state(input)?,
                     });
                 }
                 Some(xmodel_runtime::XAnimTreeSnapshot {
@@ -2960,6 +2951,68 @@ fn decode_entity_dobjs(
         ));
     }
     Ok(rows)
+}
+
+/// One mask bit per field; only fields that differ from the default state go
+/// on the wire.
+fn put_xanim_node_state(out: &mut WireWriter, state: xmodel_runtime::XAnimNodeState) {
+    let base = xmodel_runtime::XAnimNodeState::default();
+    let floats = [
+        (state.time, base.time),
+        (state.old_time, base.old_time),
+        (state.goal_time, base.goal_time),
+        (state.goal_weight, base.goal_weight),
+        (state.weight, base.weight),
+        (state.rate, base.rate),
+    ];
+    let mut mask = 0u8;
+    for (bit, (value, default)) in floats.iter().enumerate() {
+        if value.to_bits() != default.to_bits() {
+            mask |= 1 << bit;
+        }
+    }
+    let cycles = state.cycle_count != 0 || state.old_cycle_count != 0;
+    if cycles {
+        mask |= 1 << 6;
+    }
+    out.put_u8(mask);
+    for (bit, (value, _)) in floats.iter().enumerate() {
+        if mask & (1 << bit) != 0 {
+            out.put_f32(*value);
+        }
+    }
+    if cycles {
+        out.put_u16(state.cycle_count as u16);
+        out.put_u16(state.old_cycle_count as u16);
+    }
+}
+
+fn get_xanim_node_state(
+    input: &mut WireReader<'_>,
+) -> Result<xmodel_runtime::XAnimNodeState, WireError> {
+    let mask = input.get_u8()?;
+    if mask & 0x80 != 0 {
+        return Err(WireError::Malformed("unknown XAnim node state field"));
+    }
+    let mut state = xmodel_runtime::XAnimNodeState::default();
+    let fields = [
+        &mut state.time,
+        &mut state.old_time,
+        &mut state.goal_time,
+        &mut state.goal_weight,
+        &mut state.weight,
+        &mut state.rate,
+    ];
+    for (bit, field) in fields.into_iter().enumerate() {
+        if mask & (1 << bit) != 0 {
+            *field = input.get_f32()?;
+        }
+    }
+    if mask & (1 << 6) != 0 {
+        state.cycle_count = input.get_u16()? as i16;
+        state.old_cycle_count = input.get_u16()? as i16;
+    }
+    Ok(state)
 }
 
 fn put_optional_part_bits(out: &mut WireWriter, bits: Option<anim_iw4::PartBits>) {

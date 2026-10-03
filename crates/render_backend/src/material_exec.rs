@@ -152,6 +152,7 @@ struct OverlayKeepKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum OverlayKeepExtra {
     World,
+    PlacedWorld,
     ViewmodelCodeMesh,
     Lighting {
         handle: u32,
@@ -178,6 +179,9 @@ fn xmodel_depth_hack(key: u64) -> bool {
 fn execution_share_extra(draw: &RetainedDrawItem) -> ExecutionShareExtra {
     match draw.kind {
         RetainedDrawKind::MarkMesh { .. } => ExecutionShareExtra::MarkMesh,
+        RetainedDrawKind::World { .. } if placed_world(&draw.kind).is_some() => {
+            ExecutionShareExtra::Instance { depth_hack: false }
+        }
         RetainedDrawKind::World { .. } => ExecutionShareExtra::Identity,
         RetainedDrawKind::Glass {
             lighting_handle, ..
@@ -218,7 +222,20 @@ fn execution_share_key(
     }
 }
 
+/// A brush model's surface drawn away from where the BSP authored it.
+fn placed_world(kind: &RetainedDrawKind) -> Option<Mat4> {
+    match *kind {
+        RetainedDrawKind::World {
+            world_from_local, ..
+        } if world_from_local != Mat4::IDENTITY => Some(world_from_local),
+        _ => None,
+    }
+}
+
 fn instance_matrix_bits(draw: &RetainedDrawItem) -> Option<[u32; 16]> {
+    if let Some(world_from_local) = placed_world(&draw.kind) {
+        return Some(world_from_local.to_cols_array().map(f32::to_bits));
+    }
     match draw.kind {
         RetainedDrawKind::Smodel {
             world_from_local, ..
@@ -252,6 +269,9 @@ fn overlay_keep_key(draw: &RetainedDrawItem) -> OverlayKeepKey {
         RetainedDrawKind::CodeMesh {
             viewmodel: true, ..
         } => OverlayKeepExtra::ViewmodelCodeMesh,
+        RetainedDrawKind::World { .. } if placed_world(&draw.kind).is_some() => {
+            OverlayKeepExtra::PlacedWorld
+        }
         RetainedDrawKind::World { .. } | RetainedDrawKind::CodeMesh { .. } => {
             OverlayKeepExtra::World
         }
@@ -418,6 +438,16 @@ fn overlay_draw_material(
                 need,
             );
         }
+        RetainedDrawKind::World {
+            world_from_local, ..
+        } if world_from_local != Mat4::IDENTITY => overlay_smodel_world_matrix(
+            scratch,
+            runtime.frame.view_origin,
+            world_from_local,
+            runtime.clip_from_world,
+            runtime.view_from_world,
+            need,
+        ),
         _ => {}
     }
 }
@@ -496,6 +526,16 @@ fn overlay_draw_obj_only(
                 );
             }
         }
+        RetainedDrawKind::World {
+            world_from_local, ..
+        } if world_from_local != Mat4::IDENTITY => overlay_smodel_world_matrix(
+            scratch,
+            runtime.frame.view_origin,
+            world_from_local,
+            runtime.clip_from_world,
+            runtime.view_from_world,
+            need,
+        ),
         _ => {}
     }
 }

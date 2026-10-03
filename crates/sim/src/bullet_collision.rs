@@ -185,6 +185,7 @@ pub struct AuthorityDObjState {
     pub materialize_error: Option<xmodel_runtime::MaterializeError>,
 
     pub play_anim: Option<ScriptModelPlayAnim>,
+    pub script_tree: bool,
 
     pub apos: Option<entity_iw4::Trajectory>,
 
@@ -327,6 +328,7 @@ impl AuthorityDObjState {
             current_collision: None,
             materialize_error: None,
             play_anim: None,
+            script_tree: false,
             apos: None,
             t5_destructible: None,
             swap_capabilities: Vec::new(),
@@ -542,6 +544,52 @@ impl AuthorityDObjState {
         self.current_collision = None;
         self.materialized_pose_revision = None;
         self.materialize_error = None;
+    }
+
+    /// Pose this DObj with a script entity's active anim tree; `None` drops a
+    /// tree set here back to the bind pose. Revisions move only when the
+    /// nodes do.
+    pub fn set_script_tree(
+        &mut self,
+        pose: Option<(
+            Vec<xmodel_runtime::XAnimSemanticNode>,
+            xmodel_runtime::XAnimTreeRuntime,
+        )>,
+    ) {
+        let (nodes, runtime) = pose.unzip();
+        let old = self.semantic_state.tree.as_ref();
+        if nodes.is_none() && !self.script_tree
+            || self.script_tree && old.map(|tree| &tree.nodes) == nodes.as_ref()
+        {
+            return;
+        }
+        let definition_revision = match (old, &nodes) {
+            (Some(old), Some(nodes))
+                if old.nodes.len() == nodes.len()
+                    && old.nodes.iter().zip(nodes).all(|(a, b)| {
+                        a.parent == b.parent
+                            && a.kind == b.kind
+                            && a.clip == b.clip
+                            && a.parts == b.parts
+                    }) =>
+            {
+                old.definition_revision
+            }
+            (Some(old), _) => old.definition_revision.wrapping_add(1),
+            (None, _) => 1,
+        };
+        self.play_anim = None;
+        self.script_tree = nodes.is_some();
+        self.pose_revision = self.pose_revision.wrapping_add(1);
+        self.semantic_state.pose_revision = self.pose_revision;
+        self.semantic_state.tree = nodes.map(|nodes| xmodel_runtime::XAnimTreeSnapshot {
+            definition_revision,
+            state_revision: self.pose_revision,
+            nodes,
+        });
+        self.pose_request.tree = runtime;
+        self.current_collision = None;
+        self.materialized_pose_revision = None;
     }
 
     pub fn advance_script_model_play_anim(&mut self, dt_seconds: f32) -> f32 {

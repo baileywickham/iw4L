@@ -89,6 +89,14 @@ pub fn register_dyn_ent_brush_systems(app: &mut App) {
             drain_dpvs_ent_cmds
                 .after(frame::WorkerCmdSet::CellSceneEnt)
                 .in_set(frame::WorkerCmdSet::DpvsEnt),
+        )
+        .add_systems(
+            Update,
+            append_scene_brush_colour
+                .after(exec_cell_dyn_brush_cmds)
+                .after(frame::WorkerCmdSet::CellSceneEnt)
+                .before(crate::assemble::drawsurf::ingest_drawsurf_list)
+                .in_set(frame::RenderSet::Anim),
         );
 }
 
@@ -264,6 +272,90 @@ fn exec_cell_dyn_brush_cmds(
         return;
     }
     refresh_draw_items_id(cull);
+    if let Some(stats) = stats.as_mut() {
+        stats.keys = cull.draw_items.len() as u32;
+        stats.rebinds = draw_item_rebinds(&cull.draw_items);
+    }
+}
+
+/// Brush models the scene holds (script movers at their presented pose, the
+/// authored placement otherwise) draw their surfaces with that pose; the BSP
+/// camera ranges stop at `models[0]` and never reach them.
+fn append_scene_brush_colour(
+    mut scene: Option<ResMut<WorldScene>>,
+    gfx: Res<HostGfxScene>,
+    mut stats: Option<ResMut<DpvsFrameStats>>,
+) {
+    let gfx = &gfx.scene;
+    if gfx.scene_brushes.is_empty() {
+        return;
+    }
+    let Some(scene) = scene.as_mut() else {
+        return;
+    };
+    let baked_material_keys: Vec<Option<u64>> = scene
+        .runtime_material_catalog
+        .materials
+        .iter()
+        .map(|material| material.baked_draw_surf)
+        .collect();
+    let batch_primary_lights: Vec<u8> = scene
+        .batches
+        .iter()
+        .map(|batch| batch.primary_light_index)
+        .collect();
+    let Some(cull) = scene.cull.as_mut() else {
+        return;
+    };
+    let mut already = HashSet::new();
+    for item in &cull.draw_items {
+        for offset in 0..item.run {
+            already.insert(item.surf.saturating_add(offset));
+        }
+    }
+    let mut poses = crate::assemble::drawsurf::list::CONTENT_ID_SEED;
+    let mut added = 0u32;
+    for brush in &gfx.scene_brushes {
+        if let Some(entnum) = brush.param_4
+            && gfx.scene_ent_walked
+            && !gfx.scene_ent_visible(u32::from(entnum))
+        {
+            continue;
+        }
+        let index = brush.model_index as usize;
+        let Some(model) = cull.brush_models.get(index).copied() else {
+            continue;
+        };
+        if index == 0 || model.surface_count == 0 {
+            continue;
+        }
+        let pose = crate::prepare::scene::world::transform_from_gfx_placement(
+            brush.origin,
+            brush.quat.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+        )
+        .to_matrix();
+        if let Some(slot) = cull.bmodel_world_from_local.get_mut(index) {
+            *slot = pose;
+        }
+        crate::assemble::drawsurf::list::mix_content_id(&mut poses, index as u64);
+        for value in pose.to_cols_array() {
+            crate::assemble::drawsurf::list::mix_content_id(&mut poses, u64::from(value.to_bits()));
+        }
+        let (span_added, _) = append_bmodel_colour_span(
+            cull,
+            model.start_surf,
+            model.surface_count,
+            &mut already,
+            &baked_material_keys,
+            &batch_primary_lights,
+        );
+        added = added.saturating_add(span_added);
+    }
+    if added == 0 {
+        return;
+    }
+    refresh_draw_items_id(cull);
+    crate::assemble::drawsurf::list::mix_content_id(&mut cull.draw_items_id, poses);
     if let Some(stats) = stats.as_mut() {
         stats.keys = cull.draw_items.len() as u32;
         stats.rebinds = draw_item_rebinds(&cull.draw_items);
