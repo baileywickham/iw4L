@@ -60,6 +60,7 @@ impl ScriptAnimLibrary {
         if let Some(tree) = trees.get(&key) {
             return tree.clone();
         }
+        let started = std::time::Instant::now();
         let built = match self.texts.get(&key) {
             Some(text) => ScriptAnimTree::build(&key, text, |clip| self.clip(clip)),
             None => Err(format!("animtree {name} is not loaded")),
@@ -67,11 +68,13 @@ impl ScriptAnimLibrary {
         match &built {
             Ok(tree) => diag::info!(
                 Sim,
-                "gsc: animtree {key} nodes={} leaves={} missing_xanims={} duplicates={}",
+                "gsc: animtree {key} nodes={} leaves={} missing_xanims={} duplicates={} clip_bytes~{} built_in={}ms",
                 tree.nodes.len(),
                 tree.leaves,
                 tree.missing,
-                tree.duplicates
+                tree.duplicates,
+                tree.clip_bytes(),
+                started.elapsed().as_millis()
             ),
             Err(error) => diag::warn!(Sim, "gsc: animtree {key}: {error}"),
         }
@@ -102,6 +105,41 @@ pub(crate) struct ScriptAnimTree {
 impl ScriptAnimTree {
     pub(crate) fn node(&self, name: &str) -> Option<u16> {
         self.index.get(&name.to_ascii_lowercase()).copied()
+    }
+
+    /// Rough decoded size of the distinct clips the leaves hold.
+    fn clip_bytes(&self) -> usize {
+        use xmodel_runtime::{FrameIndices, Keyed, Rotation, Translation};
+        fn keyed<T>(keyed: &Keyed<T>) -> usize {
+            keyed.values.len() * std::mem::size_of::<T>()
+                + match &keyed.frames {
+                    FrameIndices::Dense => 0,
+                    FrameIndices::Sparse(frames) => frames.len() * 2,
+                }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut bytes = 0;
+        for node in self.definition.nodes() {
+            let XAnimNodeKind::Leaf { clip, .. } = &node.kind else {
+                continue;
+            };
+            if !seen.insert(Arc::as_ptr(clip)) {
+                continue;
+            }
+            bytes += std::mem::size_of::<AnimClip>();
+            for track in &clip.tracks {
+                bytes += std::mem::size_of_val(track) + track.name.len();
+                bytes += match &track.rotation {
+                    Rotation::HalfKeyed(k) | Rotation::FullKeyed(k) => keyed(k),
+                    _ => 0,
+                };
+                bytes += match &track.translation {
+                    Translation::SmallKeyed(k) | Translation::FullKeyed(k) => keyed(k),
+                    _ => 0,
+                };
+            }
+        }
+        bytes
     }
 
     pub(crate) fn clip(&self, node: u16) -> Option<&Arc<AnimClip>> {
@@ -160,6 +198,7 @@ impl ScriptAnimTree {
             }
         }
         let (mut leaves, mut missing) = (0, 0);
+        let mut missing_names = Vec::new();
         let definition = nodes
             .iter()
             .map(|node| XAnimNodeDefinition {
@@ -178,6 +217,7 @@ impl ScriptAnimTree {
                         Some(clip) => XAnimNodeKind::Leaf { clip, parts: None },
                         None => {
                             missing += 1;
+                            missing_names.push(node.name.as_ref());
                             XAnimNodeKind::Blend
                         }
                     }
@@ -185,6 +225,11 @@ impl ScriptAnimTree {
             })
             .collect();
         let definition = XAnimTreeDefinition::new(definition).map_err(|e| e.to_string())?;
+        if std::env::var("IW4L_ANIMTREE_MISSING").is_ok_and(|v| v == "1") {
+            for chunk in missing_names.chunks(64) {
+                diag::info!(Sim, "gsc: animtree {name} missing: {}", chunk.join(" "));
+            }
+        }
         Ok(Arc::new(Self {
             name: name.into(),
             nodes,

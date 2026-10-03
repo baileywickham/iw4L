@@ -334,7 +334,24 @@ pub(super) async fn walk_prepared_match(
         let mp_rows = weapons.len();
         let fpv_added = fpv_meshes.absorb(common_sp_fpv);
         let world_added = world_weapons.absorb(common_sp_world);
+        let sp_over_mp: Vec<String> = common_sp_xanims
+            .names()
+            .filter(|name| {
+                xanims
+                    .index_by_name(asset_core::AssetNamespace::Iw4, name)
+                    .is_some()
+            })
+            .map(str::to_owned)
+            .collect();
         let xanim_added = xanims.absorb(common_sp_xanims);
+        if !sp_over_mp.is_empty() {
+            diag::info!(
+                World,
+                "spec ops SP common clips over common_mp: {} (first: {})",
+                sp_over_mp.len(),
+                sp_over_mp[..sp_over_mp.len().min(48)].join(" ")
+            );
+        }
         report.push(format!(
             "spec ops SP common weapon assets: view models +{fpv_added} world guns +{world_added} clips +{xanim_added}; {} SP common materials not merged",
             common_sp_materials.map_or(0, |m| m.materials.len())

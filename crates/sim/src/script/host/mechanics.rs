@@ -188,7 +188,18 @@ pub(crate) fn deliver_finished(world: &mut World) {
         raise(world, Value::Object(object), name, Vec::new());
     }
     let notes = std::mem::take(&mut world.resource_mut::<Mechanics>().anim_notes);
+    static NOTE_LOG: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("IW4L_ANIM_NOTE_LOG").is_ok_and(|v| v == "1"));
     for (object, flag, note) in notes {
+        if *NOTE_LOG {
+            let entity = world.resource::<Runtime>().entities.get(&object);
+            diag::info!(
+                Sim,
+                "gsc: anim note entity={} class={} {flag} {note}",
+                entity.map_or(-1, |e| e.number),
+                entity.map_or("", |e| &*e.classname)
+            );
+        }
         raise(
             world,
             Value::Object(object),
