@@ -294,6 +294,40 @@ impl SimWorld {
         self.frame().set_script_mover_origin(number, origin)
     }
 
+    /// Dev-only (console `enemies`/`autoaim`): hostile sentients of `id` (and
+    /// hostile vehicles), nearest first.
+    pub fn dev_aim_targets(
+        &mut self,
+        id: ClientId,
+        head: bool,
+        vehicles: bool,
+    ) -> Vec<crate::DevAimTarget> {
+        crate::script::host::dev_aim::targets(&mut self.ecs, id.0, head, vehicles)
+    }
+
+    /// Dev-only (console `autoaim hunt`): a path node that sees the nearest hostile,
+    /// none within 64 units of `avoid`.
+    pub fn dev_hunt_spot(
+        &mut self,
+        id: ClientId,
+        min: f32,
+        max: f32,
+        avoid: &[[f32; 3]],
+    ) -> Option<[f32; 3]> {
+        crate::script::host::dev_aim::hunt_spot(&mut self.ecs, id.0, min, max, avoid)
+    }
+
+    /// Dev-only (console `autoaim`): launch speed and upward kick of the held
+    /// weapon when it fires a gravity grenade (grenade launchers).
+    pub fn dev_projectile_lob(&mut self, id: ClientId) -> Option<(f32, f32)> {
+        let weapon = self.player(id)?.weapon;
+        let facts = self.frame().missile_launch_facts(weapon)?;
+        (facts.projectile_explosion_type == 0).then_some((
+            facts.projectile_speed as f32,
+            facts.projectile_speed_up as f32,
+        ))
+    }
+
     pub fn player(&self, id: ClientId) -> Option<&PlayerState> {
         player_ref(&self.ecs, id)
     }

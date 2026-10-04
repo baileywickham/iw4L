@@ -67,6 +67,12 @@ pub(crate) struct Heli {
     /// Driven by `vehicledriveto` (an SP ground vehicle): it keeps to the
     /// ground and pitches with it.
     ground: bool,
+    /// SP `veh_pathdir` "reverse": the path is followed back through the
+    /// nodes that target the current one.
+    reverse: bool,
+    /// The script set a speed (`vehicle_setspeed*`); path nodes without a
+    /// `speed` key then keep it, a stop included.
+    scripted_speed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -142,6 +148,8 @@ impl Default for Heli {
             team: None,
             fired: false,
             ground: false,
+            reverse: false,
+            scripted_speed: false,
         }
     }
 }
@@ -444,6 +452,68 @@ fn next_node(runtime: &mut Runtime, object: u64) -> Result<Option<u64>, String> 
 }
 
 /// An SP vehicle spawner: a map `script_vehicle_*` with spawnflags bit 2.
+/// The node whose `target` is `object` (the path read backward); the first by
+/// entity order when several merge into it.
+fn prev_node(runtime: &mut Runtime, object: u64) -> Result<Option<u64>, String> {
+    node(runtime, object)?;
+    let name = match runtime.object_field(object, "targetname") {
+        Value::String(name) if !name.is_empty() => name,
+        _ => return Ok(None),
+    };
+    let candidates: Vec<u64> = runtime
+        .entities
+        .iter()
+        .filter(|(_, entity)| entity.classname.starts_with("info_vehicle_node"))
+        .map(|(id, _)| *id)
+        .collect();
+    Ok(candidates
+        .into_iter()
+        .find(|id| runtime.object_field(*id, "target") == Value::String(name.clone())))
+}
+
+fn path_successor(
+    runtime: &mut Runtime,
+    object: u64,
+    reverse: bool,
+) -> Result<Option<u64>, String> {
+    if reverse {
+        prev_node(runtime, object)
+    } else {
+        next_node(runtime, object)
+    }
+}
+
+/// SP scripts turn a path vehicle around by writing `veh_pathdir` (arcadia's
+/// Stryker backs down the street to the extraction node); the vehicle then
+/// heads for the neighbouring node in the new direction.
+fn sync_path_direction(runtime: &mut Runtime, id: u64) {
+    let Some(heli) = runtime.vehicles.get(&id) else {
+        return;
+    };
+    let (Some(current), was) = (heli.path_node, heli.reverse) else {
+        return;
+    };
+    if heli.slot != SP_SLOT {
+        return;
+    }
+    let reverse = match runtime.object_field(id, "veh_pathdir") {
+        Value::String(dir) => dir.eq_ignore_ascii_case("reverse"),
+        _ => was,
+    };
+    if reverse == was {
+        return;
+    }
+    runtime.vehicles.get_mut(&id).unwrap().reverse = reverse;
+    let target = match path_successor(runtime, current, reverse) {
+        Ok(Some(target)) => target,
+        _ => return,
+    };
+    if let Ok(origin) = node(runtime, target) {
+        runtime.vehicles.get_mut(&id).unwrap().path_running = true;
+        path_goal(runtime, id, target, origin);
+    }
+}
+
 pub(crate) fn is_sp_spawner(world: &World, value: &Value) -> bool {
     let Value::Object(id) = value else {
         return false;
@@ -570,14 +640,15 @@ fn node_speed(runtime: &mut Runtime, node: u64) -> Option<f32> {
 }
 
 fn path_goal(runtime: &mut Runtime, vehicle: u64, node: u64, origin: [f32; 3]) {
-    let last = !matches!(next_node(runtime, node), Ok(Some(_)));
+    let reverse = runtime.vehicles.get(&vehicle).is_some_and(|v| v.reverse);
+    let last = !matches!(path_successor(runtime, node, reverse), Ok(Some(_)));
     let speed = node_speed(runtime, node);
     let heli = runtime.vehicles.get_mut(&vehicle).unwrap();
     if heli.slot == SP_SLOT {
         if let Some(speed) = speed.filter(|s| *s > 0.0) {
             heli.max_speed = speed * MPH;
         }
-        if heli.max_speed <= 0.0 {
+        if heli.max_speed <= 0.0 && !heli.scripted_speed {
             heli.max_speed = SP_DEFAULT_MPH * MPH;
         }
         heli.accel = heli.accel.max(10.0 * MPH);
@@ -725,11 +796,27 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     registry.register(Method, "attachpath", |world, receiver, args| {
         heli(world, receiver)?;
         let object = super::natives::engine::entity_id(world, arg(args, 0)?)?;
-        node(&mut world.resource_mut::<Runtime>(), object)?;
+        let origin = node(&mut world.resource_mut::<Runtime>(), object)?;
         let vehicle = heli(world, receiver)?;
         vehicle.path_node = Some(object);
         vehicle.path_running = false;
         vehicle.goal = None;
+        if vehicle.slot == SP_SLOT
+            && let Value::Object(id) = *receiver
+        {
+            // `AttachPath` puts an SP vehicle on the path's node (arcadia's
+            // Stryker spawns 13 k u away and is attached to its street path).
+            let mut runtime = world.resource_mut::<Runtime>();
+            let angles = match runtime.object_field(object, "angles") {
+                Value::Vector(angles) => Some(angles),
+                _ => None,
+            };
+            runtime.set_object_field(id, "origin", Value::Vector(origin));
+            if let Some(angles) = angles {
+                runtime.set_object_field(id, "angles", Value::Vector(angles));
+                runtime.vehicles.get_mut(&id).unwrap().heading = math_iw4::angle_vectors(angles).0;
+            }
+        }
         Ok(Value::Undefined)
     });
     registry.register(Method, "startpath", |world, receiver, args| {
@@ -892,6 +979,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         heli.max_speed = speed;
         heli.accel = accel;
         heli.decel = decel;
+        heli.scripted_speed = true;
         Ok(Value::Undefined)
     });
     registry.register(
@@ -902,6 +990,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             let heli = heli(world, receiver)?;
             heli.max_speed = speed;
             heli.speed = speed;
+            heli.scripted_speed = true;
             heli.accel = heli.accel.max(speed);
             heli.decel = heli.decel.max(speed);
             Ok(Value::Undefined)
@@ -1258,6 +1347,7 @@ pub(crate) fn advance(world: &mut World) {
             runtime.vehicles.remove(&id);
             continue;
         }
+        sync_path_direction(&mut runtime, id);
         let origin = vec_field(&mut runtime, id, "origin");
         let angles = vec_field(&mut runtime, id, "angles");
         let look_at = runtime.vehicles[&id]
@@ -1389,10 +1479,12 @@ pub(crate) fn advance(world: &mut World) {
             .flatten();
         let speed = heli.speed;
         if let Some(reached) = reached_node {
-            let successor = next_node(&mut runtime, reached).and_then(|next| match next {
-                Some(next) => Ok(Some((next, node(&mut runtime, next)?))),
-                None => Ok(None),
-            });
+            let reverse = runtime.vehicles[&id].reverse;
+            let successor =
+                path_successor(&mut runtime, reached, reverse).and_then(|next| match next {
+                    Some(next) => Ok(Some((next, node(&mut runtime, next)?))),
+                    None => Ok(None),
+                });
             match successor {
                 Ok(Some((node, goal))) => path_goal(&mut runtime, id, node, goal),
                 Ok(None) => {

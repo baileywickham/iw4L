@@ -214,15 +214,22 @@ fn fire_missile(
         }
     };
     let time_ms = crate::level_time_ms(tick);
+    // IW4 `G_FireRocket` launches along the aim only; SP rocket defs carry a
+    // `projectileSpeedUp` (rpg_player 500) that would make them climb.
+    let speed_up = if sp_realm(world) {
+        0.0
+    } else {
+        facts.projectile_speed_up as f32
+    };
     let velocity = truncated_tr_delta([
         dir[0] * speed + gun_vel[0],
         dir[1] * speed + gun_vel[1],
-        dir[2] * speed + facts.projectile_speed_up as f32 + gun_vel[2],
+        dir[2] * speed + speed_up + gun_vel[2],
     ]);
     let raw_speed = vec3_length([
         dir[0] * speed + gun_vel[0],
         dir[1] * speed + gun_vel[1],
-        dir[2] * speed + facts.projectile_speed_up as f32 + gun_vel[2],
+        dir[2] * speed + speed_up + gun_vel[2],
     ]);
     let pos = Trajectory {
         tr_time: time_ms,
@@ -260,4 +267,12 @@ fn fire_missile(
     };
     world.push_projectile(projectile);
     Some(projectile)
+}
+
+fn sp_realm(world: &mut FrameWorld) -> bool {
+    world
+        .ecs()
+        .get_resource::<crate::script::Runtime>()
+        .and_then(|runtime| runtime.program.as_ref())
+        .is_some_and(|program| program.rules() == crate::script::Realm::Iw4Sp)
 }

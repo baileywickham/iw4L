@@ -555,7 +555,7 @@ pub(crate) fn run_actors(world: &mut World) {
             let to_goal = ((goal[0] - origin[0]).powi(2) + (goal[1] - origin[1]).powi(2)).sqrt();
             diag::info!(
                 Sim,
-                "actor: entity {number} {} script={} movemode={} at {:.0} {:.0} {:.0} goal {:.0} {:.0} {:.0} node={:?} dist={to_goal:.0} radius={:.0} moved={:.0} path={}/{} enemy={:?} shots={} hits_taken={} health={}",
+                "actor: entity {number} {} script={} movemode={} at {:.0} {:.0} {:.0} goal {:.0} {:.0} {:.0} node={:?} dist={to_goal:.0} radius={:.0} moved={:.0} path={}/{} enemy={:?} shots={} hits_taken={} health={} animmode={} arrival={} detour={:?}",
                 a.team,
                 a.animscript.as_ref().map_or("none", |(name, _)| name),
                 a.move_mode.name(),
@@ -575,7 +575,10 @@ pub(crate) fn run_actors(world: &mut World) {
                 a.enemy,
                 a.shots,
                 a.hits_taken,
-                health
+                health,
+                a.anim_mode,
+                a.arrival.is_some(),
+                a.detour.map(|d| d.kind),
             );
         }
     }

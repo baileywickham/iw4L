@@ -13,6 +13,8 @@ pub(crate) struct SpState {
     threat_groups: BTreeSet<String>,
     threat_bias: BTreeMap<(String, String), i32>,
     entity_groups: BTreeMap<u64, String>,
+    /// `Target_Set` entities (missile lock / HUD targets) and their offsets.
+    lock_targets: BTreeMap<u64, [f32; 3]>,
 }
 
 /// `missionSOHighestDifficulty` and `missionHighestDifficulty` hold one digit per level.
@@ -157,6 +159,57 @@ fn log_difficulty(world: &mut World, player: u64, skill: i32) {
 
 pub(crate) fn register(registry: &mut NativeRegistry) {
     use Namespace::{Function, Method};
+    // Lock-on targets: kept as a set so scripts can register and query them
+    // (`_attack_heli` stops at an unbound `Target_Set`). No HUD reticle is drawn.
+    registry.register(Function, "target_set", |world, _, args| {
+        let target = entity_id(world, args.first().ok_or("target_set: no entity")?)?;
+        let offset = match args.get(1) {
+            Some(Value::Vector(v)) => *v,
+            _ => [0.0; 3],
+        };
+        world
+            .resource_mut::<Runtime>()
+            .sp
+            .lock_targets
+            .insert(target, offset);
+        Ok(Value::Undefined)
+    });
+    registry.register(Function, "target_remove", |world, _, args| {
+        if let Ok(target) = entity_id(world, args.first().ok_or("target_remove: no entity")?) {
+            world
+                .resource_mut::<Runtime>()
+                .sp
+                .lock_targets
+                .remove(&target);
+        }
+        Ok(Value::Undefined)
+    });
+    registry.register(Function, "target_istarget", |world, _, args| {
+        let target = entity_id(world, args.first().ok_or("target_istarget: no entity")?)?;
+        let set = world
+            .resource::<Runtime>()
+            .sp
+            .lock_targets
+            .contains_key(&target);
+        Ok(Value::Int(set.into()))
+    });
+    registry.register(Function, "target_getarray", |world, _, _| {
+        let live: Vec<Value> = {
+            let runtime = world.resource::<Runtime>();
+            runtime
+                .sp
+                .lock_targets
+                .keys()
+                .filter(|id| runtime.live(id))
+                .map(|id| Value::Object(*id))
+                .collect()
+        };
+        super::super::arrays::new_array(world, live)
+    });
+    registry.register(Function, "target_isincircle", |_, _, _| Ok(Value::Int(0)));
+    registry.register(Function, "target_setturretaquire", |_, _, _| {
+        Ok(Value::Undefined)
+    });
     if let Some(set_dvar) = registry.get(Function, "setdvar") {
         registry.register(Function, "setsaveddvar", set_dvar);
     }

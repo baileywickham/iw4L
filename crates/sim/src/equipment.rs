@@ -1226,6 +1226,27 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
                     } else if sticks_to_surface(facts, normal) {
                         settle_equipment(world, tick, &mut projectile, end, normal, fraction);
                     } else if !armed {
+                        // A dud still strikes what it hits (an AI hit point-blank by a
+                        // grenade launcher takes the impact damage).
+                        if facts.impact_damage > 0
+                            && let ColliderId::EntityDObjBone { owner, bone, .. } = collider
+                            && let Some(target) = owner.script_model()
+                        {
+                            entity_hits.push((
+                                DamageSource::Projectile(projectile.id),
+                                crate::script::EntityHit {
+                                    target,
+                                    amount: facts.impact_damage,
+                                    attacker: Some(projectile.attacker()),
+                                    means: "MOD_IMPACT",
+                                    weapon: projectile.weapon,
+                                    point: end,
+                                    dir: projectile.velocity,
+                                    bone: Some(usize::from(bone)),
+                                    flags: 0,
+                                },
+                            ));
+                        }
                         projectile.live = false;
                         pending_detonation = Some(PendingDetonation {
                             projectile,
@@ -1436,7 +1457,9 @@ pub(crate) fn think_projectile(world: &mut FrameWorld, tick: Tick, entnum: i32) 
             let _ = crate::damage::apply_damage_attempt(world, tick, &intent);
         }
         for (source, mut hit) in std::mem::take(&mut entity_hits) {
-            hit.means = crate::script_player::means(world, source, hit.weapon, 0, false);
+            if hit.means.is_empty() {
+                hit.means = crate::script_player::means(world, source, hit.weapon, 0, false);
+            }
             crate::script::damage_entity(world.ecs(), &hit);
         }
     }

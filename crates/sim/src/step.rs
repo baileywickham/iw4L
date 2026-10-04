@@ -350,6 +350,7 @@ fn run_players_system(ecs: &mut World) {
             crate::script::player_commands(world.ecs(), id.0, cmd.buttons, old_buttons);
             crate::script::drive_input(world.ecs(), id.0, cmd);
             let mut cmd = *cmd;
+            crate::script::autoaim(world.ecs(), id.0, &mut cmd);
             crate::script_player::constrain_cmd(&mut world, *id, &mut cmd);
             crate::script::select_location(world.ecs(), id.0, &mut cmd, old_buttons);
             if world

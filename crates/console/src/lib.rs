@@ -20,6 +20,7 @@ mod debug_sm;
 mod debug_smc;
 mod debug_view_proj;
 mod debug_vision;
+mod dev_aim;
 mod diagnostics;
 pub mod editor;
 mod feature_dispatch;

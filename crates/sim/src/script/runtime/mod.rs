@@ -1280,6 +1280,19 @@ fn trace_level_notifies() -> bool {
     *TRACE.get_or_init(|| std::env::var("IW4L_GSC_TRACE_LEVEL").is_ok_and(|v| v == "1"))
 }
 
+/// `IW4L_GSC_TRACE_NOTIFY=a,b` logs notifies with these names on any entity or struct.
+fn traced_notify(name: &str) -> bool {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            std::env::var("IW4L_GSC_TRACE_NOTIFY")
+                .map(|v| v.split(',').map(str::to_owned).collect())
+                .unwrap_or_default()
+        })
+        .iter()
+        .any(|n| n == name)
+}
+
 fn notify(
     world: &mut World,
     current: &mut Thread,
@@ -1293,6 +1306,8 @@ fn notify(
             diag::info!(Sim, "gsc: level notify \"{name}\" t={now}");
         }
         world.resource_mut::<Runtime>().signals.push(name.clone());
+    } else if traced_notify(name) {
+        diag::info!(Sim, "gsc: notify {receiver:?} \"{name}\" t={now}");
     }
     loop {
         let runtime = world.resource::<Runtime>();

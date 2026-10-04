@@ -209,7 +209,16 @@ pub(crate) fn radius_targets(
                 ))
             })
             .unwrap_or((at, [0.0; 3]));
-        let dist = gamemode_iw4::radius_damage_distance_to_aabb(origin, mid, half);
+        let mut dist = gamemode_iw4::radius_damage_distance_to_aabb(origin, mid, half);
+        // A linked collision brush can sit away from the model (so_bridge's slide cars carry
+        // their slide clip); the blast reaches the entity at whichever is nearer.
+        let own = gamemode_iw4::radius_damage_distance_to_aabb(origin, at, [0.0; 3]);
+        let mid = if own < dist {
+            dist = own;
+            at
+        } else {
+            mid
+        };
         if dist < radius {
             targets.push((id, mid, dist));
         }
