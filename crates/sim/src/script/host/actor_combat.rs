@@ -1051,6 +1051,148 @@ fn shoot(
     Ok(Value::Undefined)
 }
 
+/// Reach of an actor's melee strike (`Actor_Melee` → `Weapon_Melee`).
+const MELEE_RANGE: f32 = 64.0;
+
+/// `melee( [direction] )` (`Actor_Melee`): a strike from the eye toward the
+/// enemy's eye (turned to `direction` in the plane when given), or along
+/// `direction` without an enemy. What it hits takes the weapon's melee damage
+/// plus 0–4 (`MOD_MELEE`) and is returned; nothing, or something that takes
+/// no damage, returns undefined.
+fn melee(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, String> {
+    let (id, object) = receiver_actor(world, receiver)?;
+    let direction = optional(args, 0, vector)?;
+    let Some((weapon_name, enemy)) = world.resource::<ActorPool>().actors.get(&id).map(|a| {
+        (
+            match a.fields.get("weapon") {
+                Some(Value::String(w)) => w.to_string(),
+                _ => String::new(),
+            },
+            a.enemy.filter(|e| world.resource::<Runtime>().live(e)),
+        )
+    }) else {
+        return Ok(Value::Undefined);
+    };
+    let from = eye(world, object);
+    let forward = match (enemy, direction) {
+        (Some(enemy), direction) => {
+            let to = eye(world, enemy);
+            let mut d = sub(to, from);
+            if let Some(dir) = direction {
+                let flat = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt().max(f32::EPSILON);
+                d = [dir[0] * flat / len, dir[1] * flat / len, d[2]];
+            }
+            normalized(d)
+        }
+        (None, Some(dir)) => normalized(dir),
+        (None, None) => return Ok(Value::Undefined),
+    };
+    let end: [f32; 3] = std::array::from_fn(|i| from[i] + forward[i] * MELEE_RANGE);
+    let presence = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .and_then(|e| e.presence);
+    let ignore = TraceIgnore {
+        model: presence,
+        ..TraceIgnore::default()
+    };
+    let (collider, point) = match entity_trace(world, from, end, MASK_SHOT, ignore) {
+        TraceOutcome::Hit { collider, end, .. } => (collider, end),
+        _ => return Ok(Value::Undefined),
+    };
+    use crate::bullet_collision::ColliderId;
+    let (target, hit) = {
+        let runtime = world.resource::<Runtime>();
+        match collider {
+            ColliderId::Player { client, .. } => (
+                crate::script::HitTarget::Player(client),
+                runtime.players.get(&client.0).map(|slot| slot.object),
+            ),
+            ColliderId::EntityDObjBone { owner, .. }
+            | ColliderId::EntityLinkedBrush { owner, .. } => match owner.script_model() {
+                Some(model) => (
+                    crate::script::HitTarget::Entity(model),
+                    runtime.presented_by(model),
+                ),
+                None => return Ok(Value::Undefined),
+            },
+            ColliderId::World { .. } => return Ok(Value::Undefined),
+        }
+    };
+    let Some(hit) = hit.filter(|hit| {
+        world
+            .resource::<Runtime>()
+            .entities
+            .get(hit)
+            .is_some_and(|e| e.can_damage)
+    }) else {
+        return Ok(Value::Undefined);
+    };
+    if let Some(team) = super::actors::actor_of(world, hit)
+        .and_then(|other| world.resource::<ActorPool>().actors.get(&other))
+        .map(|other| other.team.clone())
+        && world
+            .resource::<ActorPool>()
+            .actors
+            .get(&id)
+            .is_some_and(|a| a.team == team)
+    {
+        return Ok(Value::Undefined);
+    }
+    let frame = FrameWorld::from_world(world);
+    let weapon = crate::script_player::weapon_named(&frame, &weapon_name).ok();
+    let base = weapon
+        .and_then(|w| frame.combat_facts_for(w))
+        .map_or(0, |facts| facts.melee_damage);
+    let amount = base + (world.resource_mut::<ActorPool>().random() * 5.0) as i32;
+    diag::info!(
+        Sim,
+        "actor: {} melee hits {} for {amount} ({weapon_name})",
+        label(world, object),
+        label(world, hit)
+    );
+    // Applied now, as `G_Damage` is: the bite's knock-down makes the player
+    // undamageable in the same frame.
+    let tick = world.resource::<crate::step::StepRequest>().tick;
+    let script_hit = crate::script::ScriptHit {
+        piece: None,
+        target,
+        amount,
+        origin: point,
+        attacker: presence.map(crate::Attacker::Entity),
+        inflictor: presence,
+        means: "MOD_MELEE",
+        weapon: weapon.unwrap_or(0),
+        flags: 0,
+        hitloc: 0,
+    };
+    match target {
+        crate::script::HitTarget::Player(_) => {
+            crate::damage::apply_script_hit(&mut FrameWorld::from_world(world), tick, &script_hit);
+        }
+        crate::script::HitTarget::Entity(model) => {
+            let at = eye(world, hit);
+            super::entity_damage::damage_entity(
+                world,
+                &EntityHit {
+                    target: model,
+                    amount,
+                    attacker: script_hit.attacker,
+                    means: "MOD_MELEE",
+                    weapon: script_hit.weapon,
+                    point,
+                    dir: sub(at, point),
+                    bone: None,
+                    flags: 0,
+                },
+            );
+        }
+    }
+    Ok(Value::Object(hit))
+}
+
 fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), String> {
     match receiver {
         Value::Object(object) => super::actors::actor_of(world, *object)
@@ -1336,6 +1478,7 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         })))
     });
 
+    registry.register(Method, "melee", melee);
     registry.register(Method, "shoot", |world, receiver, args| {
         shoot(world, receiver, args, false)
     });

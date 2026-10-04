@@ -25,6 +25,7 @@ pub(crate) struct DevAim {
     fire_cooldown: f32,
     hunt_cooldown: f32,
     log_cooldown: f32,
+    switch_cooldown: f32,
     locked: Option<i32>,
     /// The locked target, its health and how long it has kept that health.
     stall: Option<(i32, i32, f32)>,
@@ -37,6 +38,8 @@ pub(crate) struct DevAim {
 const FIRE_PULSE: f32 = 0.25;
 const FIRE_GAP: f32 = 0.1;
 const HUNT_COOLDOWN: f32 = 3.0;
+/// Time for a weapon switch to finish before the next `weapnext`.
+const SWITCH_COOLDOWN: f32 = 1.5;
 const LOG_EVERY: f32 = 5.0;
 const STALL_SECONDS: f32 = 6.0;
 const SKIP_SECONDS: f32 = 8.0;
@@ -102,6 +105,8 @@ pub(crate) fn route(
                 let targets = world.0.dev_aim_targets(local.0, false, true);
                 echo(format!("enemies: {} hostile", targets.len()));
                 for t in targets {
+                    let geometry = world.0.dev_collision(t.entnum);
+                    diag::info!(Console, "enemies: ent {} collision {geometry}", t.entnum);
                     echo(format!(
                         "enemies: ent {} {} {} at ({:.0} {:.0} {:.0}) dist {:.0} health {}{}",
                         t.entnum,
@@ -196,6 +201,7 @@ pub(crate) fn drive(
     aim.fire_cooldown -= dt;
     aim.hunt_cooldown -= dt;
     aim.log_cooldown -= dt;
+    aim.switch_cooldown -= dt;
     aim.skip.retain_mut(|(_, left)| {
         *left -= dt;
         *left > 0.0
@@ -214,11 +220,14 @@ pub(crate) fn drive(
         ps.origin[2] + ps.view_height_current,
     ];
     let targets = world.0.dev_aim_targets(local.0, aim.head, aim.vehicles);
+    // Soldiers first: a vehicle is the target only with none in sight.
+    let shootable = |t: &&sim::DevAimTarget| {
+        t.visible && t.dist <= aim.max_dist && !aim.skip.iter().any(|(e, _)| *e == t.entnum)
+    };
     let target = targets
         .iter()
-        .find(|t| {
-            t.visible && t.dist <= aim.max_dist && !aim.skip.iter().any(|(e, _)| *e == t.entnum)
-        })
+        .filter(shootable)
+        .min_by_key(|t| t.classname.starts_with("script_vehicle"))
         .cloned();
     let angles_to = |from: [f32; 3], to: [f32; 3]| {
         let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -298,6 +307,22 @@ pub(crate) fn drive(
                 }
                 aim.avoid.push(ps.origin);
             }
+            // With `vehicles`: a carried rocket launcher for vehicles, the gun for the rest.
+            if aim.vehicles && aim.switch_cooldown <= 0.0 {
+                let vehicle = t.classname.starts_with("script_vehicle");
+                let (holding, loaded) = world.0.dev_launcher(local.0);
+                if vehicle && !holding && loaded.is_some() || !vehicle && holding {
+                    inputs.press("weapnext", FIRE_GAP);
+                    aim.switch_cooldown = SWITCH_COOLDOWN;
+                    diag::info!(
+                        Console,
+                        "autoaim: weapnext (held weapon {} for {} ent {})",
+                        ps.weapon,
+                        if vehicle { "vehicle" } else { "infantry" },
+                        t.entnum
+                    );
+                }
+            }
             if aim.fire && aim.fire_cooldown <= 0.0 {
                 inputs.press("+attack", FIRE_PULSE);
                 aim.fire_cooldown = FIRE_PULSE + FIRE_GAP;
@@ -313,7 +338,10 @@ pub(crate) fn drive(
                 return;
             }
             aim.hunt_cooldown = HUNT_COOLDOWN;
-            let Some(spot) = world.0.dev_hunt_spot(local.0, 150.0, 900.0, &aim.avoid) else {
+            let Some(spot) = world
+                .0
+                .dev_hunt_spot(local.0, 150.0, 900.0, &aim.avoid, aim.vehicles)
+            else {
                 diag::info!(Console, "autoaim: hunt found no node");
                 return;
             };

@@ -385,8 +385,11 @@ fn spawn_vehicle(
         None
     };
     let presence = super::presence::spawn_presence(world, origin)?;
+    // SP vehicles take damage from the start (`G_VehSpawner`); MP scripts opt in.
+    let takes_damage = super::players::single_player(world);
     let mut runtime = world.resource_mut::<Runtime>();
     let id = runtime.create_entity(EntityKind::Vehicle, classname)?;
+    runtime.entities.get_mut(&id).unwrap().can_damage = takes_damage;
     runtime.set_object_field(id, "origin", Value::Vector(origin));
     runtime.set_object_field(id, "angles", Value::Vector(angles));
     runtime.set_object_field(id, "model", Value::string(model));
@@ -1265,6 +1268,13 @@ pub(crate) fn damage(
     ];
     if super::players::single_player(world) {
         // SP has no vehicle damage callback: the engine applies it.
+        diag::info!(
+            Sim,
+            "gsc: vehicle damage target={} amount={} means={} weapon={weapon}",
+            world.resource::<Runtime>().entities[&object].classname,
+            hit.amount,
+            hit.means
+        );
         let hit = FinishedDamage {
             amount: hit.amount,
             flags: hit.flags,
@@ -1528,10 +1538,15 @@ pub(crate) fn advance(world: &mut World) {
             );
         }
         let ground = runtime.vehicles[&id].ground && runtime.vehicles[&id].hover.is_none();
+        let probe = heli_log() && now % 1000 < crate::MATCH_TICK_MS as i32;
         runtime.set_object_field(id, "origin", Value::Vector(next));
         runtime.set_object_field(id, "angles", Value::Vector([pitch, yaw, roll]));
         runtime.set_object_field(id, "veh_speed", Value::Float(speed / MPH));
         drop(runtime);
+        if probe {
+            let geometry = super::presence::collision_summary(world, id);
+            diag::info!(Sim, "heli {id}: {geometry}");
+        }
         if ground {
             follow_ground(world, id, origin, next, yaw, roll);
         }

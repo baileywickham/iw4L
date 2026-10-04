@@ -107,7 +107,7 @@ fn take_player_weapon(ps: &mut PlayerState, weapon: u32) {
     }
 }
 
-fn ammo_from_ps(world: &FrameWorld, ps: &PlayerState, weapon: u32) -> (i32, i32, i32) {
+pub(crate) fn ammo_from_ps(world: &FrameWorld, ps: &PlayerState, weapon: u32) -> (i32, i32, i32) {
     let Some(facts) = world.combat_facts_for(weapon) else {
         return (0, 0, 0);
     };

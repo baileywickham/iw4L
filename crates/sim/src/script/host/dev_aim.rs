@@ -90,8 +90,12 @@ pub(crate) fn targets(
             continue;
         }
         let tag = if head { "j_head" } else { "j_spineupper" };
-        let aim = match super::presence::tag_world(world, s.object, tag) {
-            Some((at, _)) => at,
+        // A dog has no `j_spineupper`: the middle of its body.
+        let aim = match super::presence::tag_world(world, s.object, tag)
+            .map(|(at, _)| at)
+            .or_else(|| model_centre(world, s.object))
+        {
+            Some(at) => at,
             None => {
                 let at = eye(world, s.object);
                 [
@@ -169,14 +173,20 @@ pub(crate) fn targets(
                     Value::Float(v) => (v as i32).max(0),
                     _ => 0,
                 };
-            if health <= 0 {
+            // `_vehicle` gives a `godmode` vehicle (invasion's UAV) its health back.
+            let god = matches!(
+                super::players::entity_field(world, object, "godmode"),
+                Value::Int(1..)
+            );
+            if health <= 0 || god {
                 continue;
             }
             let origin = match super::players::entity_field(world, object, "origin") {
                 Value::Vector(v) => v,
                 _ => continue,
             };
-            let aim = [origin[0], origin[1], origin[2] + 40.0];
+            let aim =
+                model_centre(world, object).unwrap_or([origin[0], origin[1], origin[2] + 40.0]);
             let classname = match super::players::entity_field(world, object, "classname") {
                 Value::String(name) => name.to_string(),
                 _ => String::new(),
@@ -207,6 +217,27 @@ pub(crate) fn targets(
     out
 }
 
+/// The middle of the entity's model bounds where it stands now (a helicopter's
+/// body hangs below its origin).
+fn model_centre(world: &mut World, object: u64) -> Option<[f32; 3]> {
+    let presence = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)?
+        .presence?;
+    let mut frame = FrameWorld::from_world(world);
+    let dobj = frame.collision_owner_mut(presence)?.dobj.as_ref()?;
+    let (mid, half) = dobj.capability.as_ref()?.bounds?;
+    if half.iter().all(|h| *h <= 0.0) {
+        return None;
+    }
+    Some(
+        dobj.world_from_model
+            .transform_point3(glam::Vec3::from_array(mid))
+            .to_array(),
+    )
+}
+
 /// A path node from which the player would see the nearest hostile: between
 /// `min`..`max` units of it, line of sight from standing eye height, nearest
 /// to the player, none within 64 units of `avoid`. Feet origin.
@@ -216,13 +247,14 @@ pub(crate) fn hunt_spot(
     min: f32,
     max: f32,
     avoid: &[[f32; 3]],
+    vehicles: bool,
 ) -> Option<[f32; 3]> {
     let player = player_object(world, client)?;
     let here = match super::players::entity_field(world, player, "origin") {
         Value::Vector(v) => v,
         _ => return None,
     };
-    let targets = targets(world, client, false, false);
+    let targets = targets(world, client, false, vehicles);
     for target in &targets {
         let mut nodes: Vec<(f32, [f32; 3])> = FrameWorld::from_world(world)
             .path_graph()

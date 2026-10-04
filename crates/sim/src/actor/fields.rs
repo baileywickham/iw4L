@@ -106,7 +106,8 @@ pub(crate) fn default_value(def: &FieldDef) -> Value {
         "anim_pose" => return Value::string("stand"),
         "groundtype" => return Value::string("default"),
         "stairsstate" => return Value::string("none"),
-        "allowpain" | "dropweapon" | "drawoncompass" | "pushable" | "facemotion" => {
+        "allowpain" | "dropweapon" | "drawoncompass" | "pushable" | "facemotion"
+        | "safetochangescript" => {
             return Value::Int(1);
         }
         _ => {}

@@ -435,6 +435,15 @@ fn register_presentation(registry: &mut NativeRegistry) {
         "setaispread",
         "setturretignoregoals",
         "hideallparts",
+        // A dog's knock-down: pitch to the ground, the player's HUD and hands.
+        "clearpitchorient",
+        "hidehud",
+        "showhud",
+        "hideviewmodel",
+        "showviewmodel",
+        "allowlean",
+        // A dead vehicle's slot; vehicles here hold none.
+        "freevehicle",
     ] {
         registry.register_missing(Method, name, |_, _, _| Ok(Value::Undefined));
     }

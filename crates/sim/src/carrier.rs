@@ -305,16 +305,17 @@ impl SimWorld {
         crate::script::host::dev_aim::targets(&mut self.ecs, id.0, head, vehicles)
     }
 
-    /// Dev-only (console `autoaim hunt`): a path node that sees the nearest hostile,
-    /// none within 64 units of `avoid`.
+    /// Dev-only (console `autoaim hunt`): a path node that sees the nearest hostile
+    /// (hostile vehicles too with `vehicles`), none within 64 units of `avoid`.
     pub fn dev_hunt_spot(
         &mut self,
         id: ClientId,
         min: f32,
         max: f32,
         avoid: &[[f32; 3]],
+        vehicles: bool,
     ) -> Option<[f32; 3]> {
-        crate::script::host::dev_aim::hunt_spot(&mut self.ecs, id.0, min, max, avoid)
+        crate::script::host::dev_aim::hunt_spot(&mut self.ecs, id.0, min, max, avoid, vehicles)
     }
 
     /// Dev-only (console `autoaim`): launch speed and upward kick of the held
@@ -326,6 +327,45 @@ impl SimWorld {
             facts.projectile_speed as f32,
             facts.projectile_speed_up as f32,
         ))
+    }
+
+    /// Dev-only (console `enemies`): what a bullet can hit on entity `entnum`.
+    pub fn dev_collision(&mut self, entnum: i32) -> String {
+        let object = self
+            .ecs
+            .resource::<crate::script::Runtime>()
+            .entities
+            .iter()
+            .find(|(_, e)| e.number == entnum)
+            .map(|(id, _)| *id);
+        object.map_or_else(
+            || "no entity".into(),
+            |object| crate::script::host::presence::collision_summary(&mut self.ecs, object),
+        )
+    }
+
+    /// Dev-only (console `autoaim vehicles`): whether the held weapon fires
+    /// rockets, and a rocket launcher the player carries with ammo left.
+    pub fn dev_launcher(&mut self, id: ClientId) -> (bool, Option<u32>) {
+        let Some(ps) = self.player(id).copied() else {
+            return (false, None);
+        };
+        let frame = self.frame();
+        let rockets = |weapon: u32| {
+            frame.combat_facts_for(weapon).is_some_and(|facts| {
+                weapon_iw4::fire_weapon_kind(facts.weap_type, facts.weap_class)
+                    == Some(weapon_iw4::FireWeaponKind::Missile)
+            })
+        };
+        let loaded = ps
+            .weapons
+            .iter()
+            .filter_map(|&w| u32::try_from(w).ok().filter(|w| *w > 0))
+            .find(|&w| {
+                let (right, left, stock) = crate::item::ammo_from_ps(&frame, &ps, w);
+                rockets(w) && right + left + stock > 0
+            });
+        (rockets(ps.weapon), loaded)
     }
 
     pub fn player(&self, id: ClientId) -> Option<&PlayerState> {

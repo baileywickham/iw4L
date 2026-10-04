@@ -506,9 +506,15 @@ fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f3
 }
 
 fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
-    let Some((orient, moving, look, claimed)) =
-        actor(world, id).map(|a| (a.orient, a.path.is_some(), a.lookahead_dir, a.claimed))
-    else {
+    let Some((orient, moving, look, claimed, enemy)) = actor(world, id).map(|a| {
+        (
+            a.orient,
+            a.path.is_some(),
+            a.lookahead_dir,
+            a.claimed,
+            a.enemy.and_then(|e| a.known.get(&e)).map(|k| k.pos),
+        )
+    }) else {
         return;
     };
     let wanted = match orient {
@@ -527,7 +533,10 @@ fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
             (length2(sub(node.origin, at)) <= NODE_ARRIVE_DIST && node.node_type != 1)
                 .then_some(node.angle)
         }),
-        Orient::Motion | Orient::Enemy => None,
+        Orient::Enemy => enemy
+            .filter(|p| length2(sub(*p, at)) > 1.0)
+            .map(|p| yaw_of(sub(p, at))),
+        Orient::Motion => None,
     };
     let Some(wanted) = wanted else {
         return;
@@ -585,8 +594,22 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     {
         return;
     }
-    let wanted: Arc<str> = if moving {
+    if let Some((name, serial)) = &current
+        && &**name == "combat"
+        && thread_running(world, *serial)
+        && dog_attacking(world, id)
+    {
+        return;
+    }
+    let bite = dog_enemy(world, id)
+        .is_some_and(|(pos, reach)| in_reach(origin(world, object), pos, reach));
+    let dog = actor(world, id).is_some_and(|a| &*a.species == "dog");
+    let wanted: Arc<str> = if bite {
+        "combat".into()
+    } else if moving {
         "move".into()
+    } else if dog {
+        "stop".into()
     } else if enemy {
         super::actor_cover::combat_script(world, id, object).into()
     } else {
@@ -597,6 +620,17 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
         && (thread_running(world, *serial) || now - started < super::actors::ANIMSCRIPT_RETRY_MS)
     {
         return;
+    }
+    if bite && current.as_ref().is_none_or(|(name, _)| &**name != "combat") {
+        let number = world
+            .resource::<Runtime>()
+            .entities
+            .get(&object)
+            .map_or(0, |e| e.number);
+        diag::info!(
+            Sim,
+            "actor: dog entity {number} in reach of its enemy, attacks"
+        );
     }
     if wanted.starts_with("cover_") && current.as_ref().is_none_or(|(name, _)| *name != wanted) {
         let node = actor(world, id).and_then(|a| a.claimed);
@@ -865,6 +899,122 @@ fn detour_done(world: &mut World, id: ActorId, object: u64, now: i64) -> bool {
     true
 }
 
+/// Dogs in an anim-driven mode (`zonly_physics`, `nophysics`) move by their
+/// anim's root motion: the bite lunges close the last `meleeattackdist`.
+pub(crate) fn follows_root_motion(world: &World, object: u64) -> bool {
+    let linked = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .is_some_and(|e| e.linked_to.is_some());
+    !linked
+        && actor_of(world, object)
+            .and_then(|id| actor(world, id))
+            .is_some_and(|a| {
+                &*a.species == "dog" && matches!(&*a.anim_mode, "zonly_physics" | "nophysics")
+            })
+}
+
+/// Moves the actor by a model-space root delta, turned by its yaw and stopped by
+/// the clip map; height stays with the ground.
+pub(crate) fn apply_root_motion(world: &mut World, object: u64, delta: [f32; 3]) {
+    if length2(delta) < 0.01 {
+        return;
+    }
+    let at = origin(world, object);
+    let yaw = match super::players::entity_field(world, object, "angles") {
+        Value::Vector(v) => v[1].to_radians(),
+        _ => 0.0,
+    };
+    let (sin, cos) = yaw.sin_cos();
+    let step = [
+        delta[0] * cos - delta[1] * sin,
+        delta[0] * sin + delta[1] * cos,
+        0.0,
+    ];
+    let lift = |p: [f32; 3]| add(p, [0.0, 0.0, 1.0]);
+    let mins = [ACTOR_MINS[0], ACTOR_MINS[1], STEP_HEIGHT];
+    let maxs = [ACTOR_MAXS[0], ACTOR_MAXS[1], 48.0];
+    let t = FrameWorld::from_world(world).trace_world(
+        lift(at),
+        lift(add(at, step)),
+        mins,
+        maxs,
+        MASK_ACTOR_SOLID,
+    );
+    if t.startsolid != 0 || t.fraction <= 0.0 {
+        return;
+    }
+    let moved = add(at, step.map(|c| c * t.fraction));
+    world
+        .resource_mut::<Runtime>()
+        .set_object_field(object, "origin", Value::Vector(moved));
+}
+
+/// A dog's enemy (`Actor_Dog_GetEnemyPos`): where it is, a quarter second ahead
+/// while it moves, and how near counts as in reach (`meleeattackdist` + 15, + 15
+/// more on a moving enemy).
+fn dog_enemy(world: &mut World, id: ActorId) -> Option<([f32; 3], f32)> {
+    let (enemy, mut reach) = actor(world, id)
+        .filter(|a| &*a.species == "dog")
+        .and_then(|a| Some((a.enemy?, a.float_field("meleeattackdist") + 15.0)))?;
+    if !world.resource::<Runtime>().live(&enemy) {
+        return None;
+    }
+    let mut pos = origin(world, enemy);
+    let client = world
+        .resource::<Runtime>()
+        .player_client_of(&Value::Object(enemy));
+    let velocity = client.and_then(|client| {
+        FrameWorld::from_world(world)
+            .player(crate::ClientId(client))
+            .map(|ps| ps.velocity)
+    });
+    if let Some(v) = velocity.filter(|v| v[0] * v[0] + v[1] * v[1] > 1.0) {
+        pos = add(pos, v.map(|c| c * 0.25));
+        reach += 15.0;
+    }
+    Some((pos, reach))
+}
+
+fn in_reach(at: [f32; 3], pos: [f32; 3], reach: f32) -> bool {
+    length2(sub(pos, at)) <= reach && (pos[2] - at[2]).abs() <= 80.0
+}
+
+/// `Actor_Dog_IsAttackScriptRunning`: a bite in progress keeps `combat` until the
+/// script says it is safe to change.
+fn dog_attacking(world: &World, id: ActorId) -> bool {
+    actor(world, id).is_some_and(|a| {
+        &*a.species == "dog"
+            && !matches!(
+                a.fields.get("safetochangescript"),
+                None | Some(Value::Int(1..))
+            )
+    })
+}
+
+/// `Actor_SetMeleeAttackSpot`: `dist` from the enemy on the dog's side, else a
+/// quarter turn either way or behind it, whichever the hull reaches the enemy from.
+fn attack_spot(world: &mut World, at: [f32; 3], enemy: [f32; 3], dist: f32) -> [f32; 3] {
+    let away = sub(at, enemy);
+    let flat = length2(away).max(0.001);
+    let (x, y) = (away[0] / flat, away[1] / flat);
+    let frame = FrameWorld::from_world(world);
+    let spots = [(x, y), (-y, x), (y, -x), (-x, -y)]
+        .map(|(dx, dy)| [enemy[0] + dx * dist, enemy[1] + dy * dist, enemy[2]]);
+    spots
+        .iter()
+        .copied()
+        .find(|spot| {
+            hull_clear(
+                &frame,
+                add(*spot, [0.0, 0.0, 1.0]),
+                add(enemy, [0.0, 0.0, 1.0]),
+            )
+        })
+        .unwrap_or(spots[0])
+}
+
 /// `Actor_FindPathToGoal`: with an enemy and no fixed node, the claimed cover node
 /// in the goal; otherwise the script goal.
 fn code_target(
@@ -883,6 +1033,12 @@ fn code_target(
             a.claimed,
         )
     })?;
+    if let Some((pos, reach)) = dog_enemy(world, id)
+        && point_at_goal(world, id, pos)
+    {
+        let dist = actor(world, id).map_or(0.0, |a| a.float_field("meleeattackdist"));
+        return (!in_reach(at, pos, reach)).then(|| (attack_spot(world, at, pos, dist), None));
+    }
     let cover = if keep {
         claimed
     } else if !fixed && enemy && human {

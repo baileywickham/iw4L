@@ -144,6 +144,10 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
                         .ok_or("MagicBullet owner is neither a player nor an entity")?,
                 }
             }
+            // SP fires them from the world (invasion's UAV hellfires): no attacker.
+            None if super::players::single_player(world) => {
+                crate::Attacker::Entity(crate::ScriptModelId::WORLD)
+            }
             None => return Err("MagicBullet needs an owner".into()),
         };
         launch(world, owner, weapon, start, end)

@@ -69,6 +69,9 @@ impl Attacker {
 pub struct ScriptModelId(pub(crate) u32);
 
 impl ScriptModelId {
+    /// No entity: the world as the owner of an SP `MagicBullet` fired without one.
+    pub const WORLD: Self = Self(u32::MAX);
+
     pub const fn from_wire(ordinal: u32) -> Self {
         Self(ordinal)
     }

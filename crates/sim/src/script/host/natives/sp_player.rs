@@ -53,6 +53,10 @@ pub(crate) fn damage(world: &mut World, tick: crate::Tick, hit: &Hit) {
     let Value::Object(object) = victim else {
         return;
     };
+    // `setcandamage( false )`: a dog's knock-down holds the player out of the fight.
+    if !world.resource::<Runtime>().entities[&object].accepts_damage(hit.flags) {
+        return;
+    }
     let amount = super::super::players::sp_damage_amount(world, tick, object, hit);
     if amount <= 0 {
         return;

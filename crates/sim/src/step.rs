@@ -583,7 +583,9 @@ fn dispatch_touches_system(ecs: &mut World) {
     let tick = ecs.resource::<StepRequest>().tick;
     let input = ecs.resource::<StepRequest>().input.clone();
     let mut world = frame_world(ecs);
-    let allow_move = world.phase() == MatchPhase::Playing;
+    // Spec Ops stays in warmup: map weapons are picked up there too.
+    let allow_move = world.phase() == MatchPhase::Playing
+        || world.game_mode_kind() == gamemode_iw4::GameModeKind::SpecOps;
     world.enter_kernel_phase(crate::gentity::KernelPhase::DispatchTouches);
     if allow_move {
         crate::item::phase_touch_items(&mut world, tick);

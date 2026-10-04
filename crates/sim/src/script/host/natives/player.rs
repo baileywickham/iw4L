@@ -1112,6 +1112,15 @@ fn register_body(registry: &mut NativeRegistry) {
         }
         Ok(Value::Undefined)
     });
+    registry.register(Method, "getnormalhealth", |world, receiver, _| {
+        let id = client_of(world, receiver)?;
+        Ok(Value::Float(
+            FrameWorld::from_world(world)
+                .player(id)
+                .filter(|ps| ps.max_health > 0)
+                .map_or(0.0, |ps| ps.health as f32 / ps.max_health as f32),
+        ))
+    });
     registry.register(Method, "setnormalhealth", |world, receiver, args| {
         let id = client_of(world, receiver)?;
         let fraction = float(args, 0)?.clamp(0.0, 1.0);

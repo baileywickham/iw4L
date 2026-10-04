@@ -209,3 +209,28 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   `animscripts/dog/dog_<state>` (init/move/stop/combat/death/pain/flashed/scripted; other states → dog_combat), and the
   dog animscripts are startup roots when the zones carry them. Dog melee on the player is not done.
 - Open: heli `mgturret` `startfiring` errors once in oilrig; dog melee (`meleebiteattackplayer` scenes).
+
+**Defense invasion to success, dog melee (2026-10-04)** — rows in `docs/spec-ops/MISSIONS.md`, scripts in `context/runs/`
+- **so_defense_invasion completes** (Air, Regular, god, 10:08.75 with the final helper; 23:57.80 before it preferred soldiers). The mi28 never took bullets because
+  SP vehicles were created undamageable (`can_damage` false until a script opts in, as MP helicopter scripts do); SP vehicles
+  now take damage from spawn (`G_VehSpawner`), so bullets wear down `bullet_armor` and RPGs kill the BTRs and helis.
+- Map weapon pickups in Spec Ops: touch and `+activate` item phases ran only in `Playing` (SO stays in warmup). The run
+  picks up the RPG beside the start; `autoaim … vehicles` now prefers soldiers, `weapnext`s to a carried rocket launcher
+  for vehicles and back, aims at a model's bounds centre (heli bodies hang below the origin; dogs have no `j_spineupper`),
+  skips `godmode` vehicles (the UAV) and hunts nodes that see vehicles. `enemies` prints each target's collision.
+- Ownerless SP `MagicBullet` fires from the world (`ScriptModelId::WORLD`, attacker undefined): UAV hellfires kill hunters.
+  MP still refuses it. `IW4L_HELI_LOG=1` adds each flying vehicle's collision summary.
+- Dogs (`Actor_Dog_Exposed_Think`): with the enemy in its goal a dog paths to a melee spot `meleeattackdist` away and
+  runs `dog_combat` once within reach (+15, +15 and a 0.25 s lead on a moving enemy), which stays while
+  `safetochangescript` is false; dogs in `zonly_physics`/`nophysics` move by their anim's root motion (the lunge).
+  Bound `melee` (`Actor_Melee`: 64 u strike, weapon melee damage + 0–4, `MOD_MELEE`, applied at once), `getnormalhealth`;
+  `clearpitchorient`, HUD/viewmodel hide/show, `allowlean`, `freevehicle` as presentation no-ops. `face enemy` turns a
+  standing actor to its enemy. An SP player with `setcandamage( false )` takes no damage.
+- Forest evidence (un-godded): `actor: dog entity 612 in reach of its enemy, attacks`, `melee hits player 0 for 54
+  (dog_bite)`, `client=0 damaged 15 (raw 54) means=MOD_MELEE … by actor_enemy_dog 612`, knock-down view with the
+  `+melee` hint (`context/dogs/dog_knockdown.png`, charge in `dog_charge.png`), then the player dies; shooting first,
+  `entity 612 died by player 0 means=MOD_HEAD_SHOT`.
+- Open: knock-down viewhands not drawn (`hideviewmodel`/`showonclient` are no-ops), neck snap not exercised, root motion
+  only for dogs.
+- Regressions (Air): The Pit 2:28.50 (24/24), snowrace1 0:58.85, killspree_invasion 0:50.60, forest 1:56.30, `mp_boneyard`
+  spawn 0 → InGame. MP vehicle damage untouched (SP-only spawn damage, SP-only ownerless `MagicBullet`).

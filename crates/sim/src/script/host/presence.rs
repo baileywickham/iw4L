@@ -271,6 +271,38 @@ pub(crate) fn sync_presence(world: &mut World) {
     resolve_link_tags(world);
 }
 
+/// What a bullet can hit on an entity: its model, retained capability, contents,
+/// bounds and materialized collision (`IW4L_HELI_LOG`, console `enemies`).
+pub(crate) fn collision_summary(world: &mut World, object: u64) -> String {
+    let Some(presence) = world
+        .resource::<Runtime>()
+        .entities
+        .get(&object)
+        .and_then(|e| e.presence)
+    else {
+        return "no presence".into();
+    };
+    let mut frame = FrameWorld::from_world(world);
+    let Some(row) = frame.collision_owner_mut(presence) else {
+        return "no collision row".into();
+    };
+    let solid = row.solid;
+    let Some(dobj) = row.dobj.as_ref() else {
+        return format!("collision row without a model solid={solid}");
+    };
+    let capability = dobj.capability.as_ref();
+    format!(
+        "model={} capability={} contents={:?} bounds={:?} coll_surfs={:?} bones={:?} err={:?} solid={solid}",
+        dobj.current_model,
+        capability.is_some(),
+        capability.and_then(|c| c.contents),
+        capability.and_then(|c| c.bounds),
+        capability.map(|c| c.coll_surfs.len()),
+        dobj.current_collision.as_ref().map(|c| c.bones.len()),
+        dobj.materialize_error
+    )
+}
+
 fn present(world: &mut World, now: i32) {
     let retired = std::mem::take(&mut world.resource_mut::<Runtime>().retired_presence);
     let wanted = collect_wanted(world);

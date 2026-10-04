@@ -245,6 +245,28 @@ impl EntityAnim {
         Ok(Some((nodes, runtime)))
     }
 
+    /// Root translation the tree's dominant anim moved through this step, in
+    /// model space (a loop that wrapped adds the lap's end and start).
+    fn root_delta(&self) -> [f32; 3] {
+        let Some(leaf) = self.dominant_leaf(0) else {
+            return [0.0; 3];
+        };
+        let Some(clip) = self.tree.clip(leaf) else {
+            return [0.0; 3];
+        };
+        let state = self.state(leaf);
+        let span = |a: f32, b: f32| {
+            let (from, to) = (clip.abs_delta_trans(a), clip.abs_delta_trans(b));
+            [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
+        };
+        if state.time >= state.old_time {
+            span(state.old_time, state.time)
+        } else {
+            let (lap, rest) = (span(state.old_time, 1.0), span(0.0, state.time));
+            [lap[0] + rest[0], lap[1] + rest[1], lap[2] + rest[2]]
+        }
+    }
+
     fn dominant_leaf(&self, node: u16) -> Option<u16> {
         let states = self.runtime.states();
         let mut best: Option<(f32, u16)> = None;
@@ -350,6 +372,7 @@ fn crossed(clip: &AnimClip, state: &XAnimNodeState, mut deliver: impl FnMut(&str
 }
 
 pub(crate) fn advance_anims(world: &mut World, dtime: f32) {
+    let mut moved = Vec::new();
     world.resource_scope::<Mechanics, _>(|world, mut mechanics| {
         if mechanics.anims.is_empty() {
             return;
@@ -370,11 +393,17 @@ pub(crate) fn advance_anims(world: &mut World, dtime: f32) {
             if let Err(error) = anim.advance(dtime, &mut notes) {
                 diag::warn!(Sim, "gsc: animtree {} on entity: {error}", anim.tree.name);
             }
+            if super::actor_nav::follows_root_motion(world, object) {
+                moved.push((object, anim.root_delta()));
+            }
             mechanics
                 .anim_notes
                 .extend(notes.into_iter().map(|(flag, note)| (object, flag, note)));
         }
     });
+    for (object, delta) in moved {
+        super::actor_nav::apply_root_motion(world, object, delta);
+    }
 }
 
 /// Put each animated entity's active tree on its DObj: the snapshot carries
