@@ -879,6 +879,27 @@ impl MaterialCatalog {
         self.absorb_asset_population_with_material_policy(donor, false)
     }
 
+    /// Keeps the materials `keep` accepts and only the images they sample; shaders,
+    /// vertex declarations and technique sets stay (shared, small). A donor trimmed this
+    /// way lends a few materials (SP common's `gfx_laser*`) without its whole image pool.
+    pub fn retain_materials(&mut self, keep: impl Fn(&AuthoredMaterial) -> bool) {
+        let defs = &mut self.defs;
+        defs.materials.retain(|material| keep(material));
+        let old = std::mem::take(&mut defs.images);
+        let mut remap: Vec<Option<usize>> = vec![None; old.len()];
+        for material in &mut defs.materials {
+            for texture in &mut material.textures {
+                texture.image = texture.image.and_then(|index| {
+                    let image = old.get(index)?;
+                    Some(*remap[index].get_or_insert_with(|| {
+                        defs.images.push(image.clone());
+                        defs.images.len() - 1
+                    }))
+                });
+            }
+        }
+    }
+
     pub fn absorb_asset_population_host_materials_win(
         &mut self,
         donor: MaterialCatalog,

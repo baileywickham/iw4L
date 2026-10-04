@@ -16,6 +16,16 @@ pub fn publish_gap_hud(
     let Some(report) = report else {
         return;
     };
+    // Every line below is a function of these four; skip the per-frame
+    // formatting when none of them moved since the last publish.
+    if !hud.title.is_empty()
+        && !hud.is_changed()
+        && !report.is_changed()
+        && !identity.is_changed()
+        && !class_store.is_changed()
+    {
+        return;
+    }
 
     let mut body = vec![
         format!("role: {}", identity.role_label),

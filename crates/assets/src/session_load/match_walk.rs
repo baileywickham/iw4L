@@ -368,8 +368,15 @@ pub(super) async fn walk_prepared_match(
         }
         report.push(format!(
             "spec ops SP common weapon assets: view models +{fpv_added} world guns +{world_added} clips +{xanim_added}; {} SP common materials not merged",
-            common_sp_materials.map_or(0, |m| m.materials.len())
+            common_sp_materials.as_ref().map_or(0, |m| m.materials.len())
         ));
+        // The laser beam (`laserForceOn`) draws `gfx_laser_light`, which only SP common has.
+        if let Some(mut lasers) = common_sp_materials {
+            lasers.retain_materials(|material| material.name.as_str().starts_with("gfx_laser"));
+            let n = lasers.materials.len();
+            materials.absorb_asset_population_host_materials_win(lasers);
+            report.push(format!("spec ops SP common laser materials: {n} merged"));
+        }
         let mut sources = vec![
             ("SP common", common_sp_weapons),
             ("map", map_weapons.weapons),
@@ -1477,17 +1484,7 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
             )),
         };
     load_strings(addon, &mut report);
-    let common = match find_zone_for_tree(addon, "common") {
-        Ok(found) => {
-            load_strings(&found.path, &mut report);
-            walk_zone(&found.path, false)
-        }
-        Err(error) => {
-            report.push(format!("spec ops: no SP common zone: {error}"));
-            crate::lane::ScriptZoneWalk::default()
-        }
-    };
-    let menus = match asset_game::load_menu_catalog(addon) {
+    let mut menus = match asset_game::load_menu_catalog(addon) {
         Ok(menus) => {
             report.push(format!(
                 "spec ops: {} mission menus from {}",
@@ -1499,6 +1496,63 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
         Err(error) => {
             report.push(format!("spec ops: mission menu gap: {error}"));
             None
+        }
+    };
+    let common = match find_zone_for_tree(addon, "common") {
+        Ok(found) => {
+            load_strings(&found.path, &mut report);
+            // The mission menus draw SP common images (EOG stars) and read its tables; walk
+            // them beside the script walk of the same zone.
+            let wanted: Vec<String> = menus
+                .as_ref()
+                .map(|menus| {
+                    menus
+                        .referenced_materials()
+                        .into_iter()
+                        .filter(|name| {
+                            menus
+                                .zone_image(asset_core::AssetRef::bare_name(name))
+                                .is_none()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // SP `ui.ff` beside it holds the menu images (`difficulty_star_*_hi_res`).
+            let sources = [found.path.clone(), found.path.with_file_name("ui.ff")];
+            let (walk, assets) = std::thread::scope(|scope| {
+                let assets = scope.spawn(|| {
+                    sources
+                        .iter()
+                        .filter(|path| path.is_file())
+                        .map(|path| (path, asset_game::load_menu_assets(path, &wanted)))
+                        .collect::<Vec<_>>()
+                });
+                let walk = walk_zone(&found.path, false);
+                (walk, assets.join().unwrap_or_default())
+            });
+            for (path, loaded) in assets {
+                match (loaded, menus.as_mut()) {
+                    (Ok(assets), Some(menus)) => {
+                        report.push(format!(
+                            "spec ops: {} menu images, {} string tables from {}",
+                            assets.zone_images.len(),
+                            assets.string_tables.len(),
+                            path.display()
+                        ));
+                        menus.absorb_missing(assets);
+                    }
+                    (Err(error), _) => report.push(format!(
+                        "spec ops: menu assets gap {}: {error}",
+                        path.display()
+                    )),
+                    _ => {}
+                }
+            }
+            walk
+        }
+        Err(error) => {
+            report.push(format!("spec ops: no SP common zone: {error}"));
+            crate::lane::ScriptZoneWalk::default()
         }
     };
     let mut common = common;

@@ -137,6 +137,10 @@ pub mod eflags {
     pub const TURRET_ACTIVE_DUCK: u32 = 0x800;
 
     pub const RADAR_JAM: u32 = 0x200000;
+
+    /// IW4L: SP `laserForceOn` — the player's weapon draws its laser (falls back to the
+    /// flash tag when the weapon has no `tag_laser`).
+    pub const LASER: u32 = 0x4000_0000;
 }
 
 pub mod other_flags {

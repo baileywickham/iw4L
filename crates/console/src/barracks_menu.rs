@@ -11,6 +11,8 @@ pub(crate) struct BarracksMenuState {
     reward_hover: usize,
     rewards: Vec<u32>,
     status: String,
+    /// The dvars below were published and none of their inputs moved since.
+    published: bool,
 }
 
 pub(crate) fn register(registry: &mut ConsoleRegistry) {
@@ -47,11 +49,18 @@ pub(crate) fn route(
         commands.read().for_each(drop);
         return;
     }
-    let rows = reward_rows(&catalog);
-    for command in commands
+    let inputs_changed =
+        profile.is_changed() || catalog.is_changed() || loc.is_changed() || settings.is_changed();
+    let mut commands = commands
         .read()
         .filter(|command| command.name.starts_with("ui_barracks_"))
-    {
+        .peekable();
+    if state.published && !inputs_changed && commands.peek().is_none() {
+        return;
+    }
+    state.published = true;
+    let rows = reward_rows(&catalog);
+    for command in commands {
         let arg = command.args.first().map(String::as_str).unwrap_or("");
         let index = arg.parse::<usize>().ok();
         let table_name = if state.emblems {

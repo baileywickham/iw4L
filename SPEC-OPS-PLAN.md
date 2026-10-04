@@ -234,3 +234,21 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   only for dogs.
 - Regressions (Air): The Pit 2:28.50 (24/24), snowrace1 0:58.85, killspree_invasion 0:50.60, forest 1:56.30, `mp_boneyard`
   spawn 0 → InGame. MP vehicle damage untouched (SP-only spawn damage, SP-only ownerless `MagicBullet`).
+
+**Presentation loose ends (2026-10-04)**
+- EOG "Stars Earned!": the mission menus' images and tables now come from SP `common.ff` (`sp/specopstable.csv`,
+  death icons) and SP `ui.ff` (`difficulty_star_*_hi_res`, IWD stubs decoded from `iw_*.iwd`), walked beside the
+  script walk; the HUD adds them to its image set when it merges the mission menus. SP-only menu ops 167
+  (`getprofiledata`-style: last argument names the profile field) and 173 (character at index) read the local
+  `SpProfile`. Pit (Air, fresh profile): one gold star + two grey empties. No crosshair under `*eog_*` menus.
+- AC-130 zoom: SP `setsaveddvar( "cg_playerFovScale<N>" | "cg_fovScale", f )` publishes client dvars
+  `cg_playerfovscale` / `cg_fovscale` to player N (all players); the client lens multiplies them into its FOV
+  (`view_kick.rs`). SP `cg_fov` is 65 on the server. Co-op (Air): 105/40/25 mm → scale 0.846/0.385/0.200.
+- Laser designator: `laserForceOn/Off` set `eflags::LASER` (`0x4000_0000`) on the player; FPV and remote bodies lase
+  from `tag_laser`, else the flash tag; SP common's `gfx_laser_light` is merged into the material pool. **Not visible
+  yet** in the gunner's thermal view or first person (A/B screenshots identical) — the post-light path is unverified.
+- Lobby / `getmapname`: Spec Ops zones show the mission name (`BODY COUNT`), not the zone stem.
+- Solo `player.laststand` reads 0 in SP; the co-op per-frame `spec ops: player … gameskill=` log alternation is gone
+  (last line kept per player). Scripted one-shot presses (`weapnext`, `+actionslot N`) in an unfocused window fire once.
+- Tooling (worktree scratch): `context/coop/air_duo.sh` (both clients + local master on the Air),
+  `context/coop/air_lobby.sh`, `context/pit_runs/air_stars.sh` (fresh profile).

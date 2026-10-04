@@ -86,6 +86,20 @@ pub fn add_runtime_plugins_with_role(app: &mut App, role: RuntimeRole) {
         render_app.edit_schedule(bevy::render::ExtractSchedule, |schedule| {
             schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
         });
+        if cfg!(target_os = "macos") {
+            // AppKit lets only the main thread create the Metal layer behind
+            // the NSView. The single-threaded `Render` schedule would run
+            // bevy's `create_surfaces` on the render thread when rendering is
+            // pipelined, so the surface is created (and configured) here, in
+            // extraction, which always runs on the main thread. `Render`'s own
+            // copy then finds it configured and only reconfigures on a resize.
+            render_app.add_systems(
+                bevy::render::ExtractSchedule,
+                bevy::render::view::create_surfaces
+                    .run_if(bevy::render::view::need_surface_configuration)
+                    .after(bevy::render::camera::extract_cameras),
+            );
+        }
     }
 }
 
@@ -176,14 +190,13 @@ const PIPELINED_RENDERING_ENV: &str = "IW4L_PIPELINED_RENDERING";
 /// boundary; the bounded render channel permits one outstanding frame.
 /// Set IW4L_PIPELINED_RENDERING=0 for synchronous presentation.
 ///
-/// Off by default on macOS: AppKit only lets the main thread touch the NSView
-/// behind the Metal surface. Bevy hands `create_surfaces` back to the main
-/// thread through the multi-threaded executor, which the single-threaded
-/// `Render` schedule above bypasses, so the render thread would create it and
-/// panic in `raw-window-metal`.
+/// On macOS the window surface is created during extraction (main thread,
+/// see `add_runtime_plugins_with_role`): AppKit only lets the main thread
+/// touch the NSView, and the single-threaded `Render` schedule would otherwise
+/// create it on the render thread and panic in `raw-window-metal`.
 fn pipelined_rendering() -> bool {
     match std::env::var_os(PIPELINED_RENDERING_ENV) {
-        None => !cfg!(target_os = "macos"),
+        None => true,
         Some(_) => perf::switch(PIPELINED_RENDERING_ENV),
     }
 }

@@ -205,6 +205,64 @@ impl HudImages {
         self.zone_installed = true;
         self.zone_uploaded = false;
         self.blood_plan = Some(blood_material_binding(catalog));
+        self.extend_zone(catalog);
+    }
+
+    /// Images a later catalog brings (a Spec Ops mission's menus and the SP common images
+    /// they draw); images already installed stay.
+    pub fn add_zone_images(&mut self, catalog: &MenuCatalog) {
+        let fresh = |name: &String| !self.zone_rgba.contains_key(&cache_key(name));
+        let mut added = MenuCatalog::default();
+        added.zone_images = catalog
+            .zone_images
+            .iter()
+            .filter(|(name, _)| fresh(name))
+            .map(|(name, image)| (name.clone(), image.clone()))
+            .collect();
+        if added.zone_images.is_empty() {
+            return;
+        }
+        let wanted = |name: &String| added.zone_images.contains_key(&cache_key(name));
+        added.material_srgb_reads = catalog
+            .material_srgb_reads
+            .iter()
+            .filter(|(name, _)| wanted(name))
+            .map(|(name, srgb)| (name.clone(), *srgb))
+            .collect();
+        added.material_images = catalog
+            .material_images
+            .iter()
+            .filter(|(name, _)| wanted(name))
+            .map(|(name, image)| (name.clone(), image.clone()))
+            .collect();
+        added.material_2d_plans = catalog
+            .material_2d_plans
+            .iter()
+            .filter(|(name, _)| wanted(name))
+            .map(|(name, plan)| (name.clone(), plan.clone()))
+            .collect();
+        added.material_state_bits = catalog
+            .material_state_bits
+            .iter()
+            .filter(|(name, _)| wanted(name))
+            .map(|(name, bits)| (name.clone(), bits.clone()))
+            .collect();
+        diag::info!(
+            Ui,
+            "hud: {} zone images added: {}",
+            added.zone_images.len(),
+            added
+                .zone_images
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        self.extend_zone(&added);
+        self.zone_uploaded = false;
+    }
+
+    fn extend_zone(&mut self, catalog: &MenuCatalog) {
         self.zone_srgb_reads.extend(
             catalog
                 .material_srgb_reads

@@ -20,6 +20,7 @@ pub(crate) struct MenuWorld<'a> {
     pub scores_open: bool,
     pub classes: Option<&'a frame::HostClassLoadouts>,
     pub weapons: Option<&'a asset_game::WeaponRegistry>,
+    pub sp_profile: Option<&'a sim::SpProfile>,
 }
 
 const GAMETYPES_TABLE: &str = "mp/gametypestable.csv";
@@ -362,6 +363,12 @@ impl ExprHost for MenuHost<'_> {
             Err(ExprError::Host("player data path"))
         }
     }
+    fn profile_data(&self, field: &str) -> Result<Operand, ExprError> {
+        let profile = self.world.sp_profile.ok_or(ExprError::Host("sp profile"))?;
+        Ok(Operand::Str(
+            profile.get(field).unwrap_or_default().to_owned(),
+        ))
+    }
     fn table_lookup(
         &self,
         table: &str,
@@ -428,6 +435,12 @@ impl ExprHost for MenuHost<'_> {
             "MPUI_{}",
             map.strip_prefix("mp_").unwrap_or(&map).to_ascii_uppercase()
         );
-        Ok(Operand::Str(self.localized(&key).unwrap_or(map)))
+        // Spec Ops zones name their mission in SP common (`SPECIAL_OPS_SO_…`).
+        let mission = format!("SPECIAL_OPS_{}", map.to_ascii_uppercase());
+        Ok(Operand::Str(
+            self.localized(&key)
+                .or_else(|| self.localized(&mission))
+                .unwrap_or(map),
+        ))
     }
 }

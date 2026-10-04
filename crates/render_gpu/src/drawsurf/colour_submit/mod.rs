@@ -2248,23 +2248,37 @@ impl ExactPrepare<'_> {
             texture_slot_words(device, table, &textures)
         };
         let mut shared_guard;
+        let mut local_slots = None;
         let (texture_slots, table) = match &mut self.textures {
-            PrepareTextureTables::SceneShared(shared) => {
+            PrepareTextureTables::SceneShared { shared, local } => {
+                // The shared tables only grow inside a frame, so a lane's own
+                // copy of an answer stays right; it keeps the lanes off the
+                // shared lock for the common hit.
+                if let Some(slots) = local.get(&(scene_index, key)) {
+                    self.cost.tex_bind_hit_n = self.cost.tex_bind_hit_n.saturating_add(1);
+                    return Ok(Arc::clone(slots));
+                }
                 shared_guard = shared
                     .lock()
                     .expect("scene texture tables are never poisoned");
                 let refs = &mut *shared_guard;
+                local_slots = Some(local);
                 (&mut refs.slots[scene_index], &mut refs.tables[scene_index])
             }
             PrepareTextureTables::Shadow { slots, table } => (&mut **slots, &mut **table),
         };
-        if let Some(slots) = texture_slots.get(&key) {
+        let slots = if let Some(slots) = texture_slots.get(&key) {
             self.cost.tex_bind_hit_n = self.cost.tex_bind_hit_n.saturating_add(1);
-            return Ok(Arc::clone(slots));
+            Arc::clone(slots)
+        } else {
+            self.cost.tex_bind_miss_n = self.cost.tex_bind_miss_n.saturating_add(1);
+            let slots = resolve(table)?;
+            texture_slots.insert(key, Arc::clone(&slots));
+            slots
+        };
+        if let Some(local) = local_slots {
+            local.insert((scene_index, key), Arc::clone(&slots));
         }
-        self.cost.tex_bind_miss_n = self.cost.tex_bind_miss_n.saturating_add(1);
-        let slots = resolve(table)?;
-        texture_slots.insert(key, Arc::clone(&slots));
         Ok(slots)
     }
 }
@@ -2302,7 +2316,11 @@ struct SceneTextureState {
 }
 
 enum PrepareTextureTables<'a> {
-    SceneShared(&'a std::sync::Mutex<SceneTextureState>),
+    SceneShared {
+        shared: &'a std::sync::Mutex<SceneTextureState>,
+        /// This lane's answers from `shared` this frame, by scene table index.
+        local: HashMap<(usize, BoundTextureKey), Arc<[u32]>>,
+    },
     Shadow {
         slots: &'a mut HashMap<BoundTextureKey, Arc<[u32]>>,
         table: &'a mut ExactTextureTable,
@@ -5529,7 +5547,7 @@ impl ExactPrepare<'_> {
         binds_spot_shadow: bool,
         out: &mut Vec<PreparedExactDraw>,
     ) -> Result<usize, GpuSubmitRefusal> {
-        let after_scene_resolve = matches!(self.textures, PrepareTextureTables::SceneShared(_))
+        let after_scene_resolve = matches!(self.textures, PrepareTextureTables::SceneShared { .. })
             && (item.camera_region == Some(asset_iw4::CAMERA_REGION_EMISSIVE)
                 || matches!(item.kind, RetainedDrawKind::CodeMesh { .. })
                 || matches!(item.kind, RetainedDrawKind::Glass { .. })

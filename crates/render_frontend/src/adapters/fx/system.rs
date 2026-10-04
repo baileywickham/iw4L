@@ -758,6 +758,14 @@ fn commit_fx_transaction(
         };
         match code_mesh_bind(light.material_name, &color_images, &runtime) {
             FxCodeMeshBind::Skip(cause) => {
+                static REPORTED: std::sync::Once = std::sync::Once::new();
+                REPORTED.call_once(|| {
+                    diag::warn!(
+                        World,
+                        "fx: post light material `{}` not drawn: {cause:?}",
+                        light.material_name
+                    );
+                });
                 count_fx_present_skip(&mut cursor, cause);
                 env.post_lights.miss_material = env.post_lights.miss_material.saturating_add(1);
                 continue;

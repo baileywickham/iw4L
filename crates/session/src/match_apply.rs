@@ -1175,6 +1175,8 @@ fn preflight_match_install(
     }
     if specops {
         script_dvars.push(("specialops".into(), "1".into()));
+        // `_ac130` and `_cobrapilot` scale the view from the engine's FOV.
+        script_dvars.push(("cg_fov".into(), "65".into()));
     }
     script_dvars.push(("mapname".into(), zone.to_owned()));
     script_dvars.push(("g_gametype".into(), gametype.to_owned()));

@@ -267,6 +267,16 @@ pub fn sync_camera_from_presented(
         return;
     };
     let viewmodel = get_viewmodel_weapon_index(ps);
+    // SP saved dvars `cg_fovScale` / `cg_playerFovScale<N>` (AC-130 gunner zoom per weapon).
+    let fov_scale = presented
+        .snapshot()
+        .map(|snapshot| snapshot.meta.script_dvars(local.0))
+        .map_or(CG_FOV_SCALE_DEFAULT, |dvars| {
+            dvars.float("cg_fovscale").unwrap_or(CG_FOV_SCALE_DEFAULT)
+                * dvars
+                    .float("cg_playerfovscale")
+                    .unwrap_or(CG_FOV_SCALE_DEFAULT)
+        });
     if let Some((pose, fov, focus_distance)) = killcam.update(
         &presented,
         local.0,
@@ -341,6 +351,7 @@ pub fn sync_camera_from_presented(
             viewmodel,
             weapons.as_ref().and_then(|w| w.0.facts_of(viewmodel)),
             false,
+            fov_scale,
             actions.as_deref_mut(),
         )
         .unwrap_or(settings.fov);
@@ -464,6 +475,7 @@ pub fn sync_camera_from_presented(
         viewmodel,
         weapons.as_ref().and_then(|w| w.0.facts_of(viewmodel)),
         kick.b_position_to_ads,
+        fov_scale,
         actions.as_deref_mut(),
     ) {
         kick.horiz_fov_deg = horiz;
@@ -480,6 +492,7 @@ fn apply_fpv_lens_fov(
     viewmodel: u32,
     facts: Option<WeaponBodyFacts>,
     b_position_to_ads: bool,
+    fov_scale: f32,
     actions: Option<&mut ClientActionInput>,
 ) -> Option<f32> {
     let facts = facts.filter(|f| f.body_resolved).unwrap_or_default();
@@ -503,7 +516,7 @@ fn apply_fpv_lens_fov(
         aim_down_sight: facts.aim_down_sight && facts.ads_zoom_fov > 0.0,
         ads_zoom_fov: ads_target,
         overlay_zoom: 0.0,
-        fov_scale: CG_FOV_SCALE_DEFAULT,
+        fov_scale,
         fov_min: CG_FOV_MIN_DEFAULT,
     };
     let (horiz, _) = calc_fov_from_ads(&inputs, f_weapon_pos_frac, b_position_to_ads, &overlay);

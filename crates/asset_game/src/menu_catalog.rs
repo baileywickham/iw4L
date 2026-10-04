@@ -508,6 +508,24 @@ impl MenuCatalog {
             self.zone_images.insert(name, image);
         }
     }
+
+    /// [`Self::absorb`] that keeps what this catalog already has.
+    pub fn absorb_missing(&mut self, other: MenuCatalog) {
+        fn keep<V>(into: &mut BTreeMap<String, V>, from: BTreeMap<String, V>) {
+            for (name, value) in from {
+                into.entry(name).or_insert(value);
+            }
+        }
+        keep(&mut self.menus, other.menus);
+        keep(&mut self.fonts, other.fonts);
+        keep(&mut self.string_tables, other.string_tables);
+        keep(&mut self.rawfiles, other.rawfiles);
+        keep(&mut self.material_state_bits, other.material_state_bits);
+        keep(&mut self.material_srgb_reads, other.material_srgb_reads);
+        keep(&mut self.material_2d_plans, other.material_2d_plans);
+        keep(&mut self.material_images, other.material_images);
+        keep(&mut self.zone_images, other.zone_images);
+    }
 }
 
 /// Menus a Spec Ops mission zone carries (`sp_eog_summary`, `coop_eog_summary`, …),
@@ -598,6 +616,59 @@ pub fn load_menu_catalog(path: &Path) -> Result<MenuCatalog, String> {
 }
 
 fn load_menu_catalog_with_iwd(path: &Path, games: Option<&Path>) -> Result<MenuCatalog, String> {
+    Ok(walk_menu_zone(path)?.finish_and_take(games))
+}
+
+/// The images of `materials` and the string tables of a zone whose menus are not wanted:
+/// SP `common.ff` holds what a Spec Ops mission's menus draw (`difficulty_star_*`) and read
+/// (`sp/specopstable.csv`).
+pub fn load_menu_assets(path: &Path, materials: &[String]) -> Result<MenuCatalog, String> {
+    let mut sink = walk_menu_zone(path)?;
+    // Most SP UI images are IWD stubs in the zone (`iw_*.iwd` holds the pixels).
+    let games = game_root_for_zone(path).ok();
+    for material in materials {
+        sink.install_ui_image(material, games.as_deref());
+    }
+    let mut catalog = std::mem::take(&mut sink.catalog);
+    let images = catalog.zone_images.clone();
+    let wanted = |name: &String| images.contains_key(&name.to_ascii_lowercase());
+    catalog.material_state_bits.retain(|name, _| wanted(name));
+    catalog.material_2d_plans.retain(|name, _| wanted(name));
+    catalog.material_srgb_reads.retain(|name, _| wanted(name));
+    catalog.material_images.retain(|name, _| wanted(name));
+    catalog.menus.clear();
+    catalog.fonts.clear();
+    catalog.rawfiles.clear();
+    Ok(catalog)
+}
+
+impl MenuCatalog {
+    /// Materials the menus draw: window and item backgrounds and the string literals of
+    /// `material` expressions.
+    #[must_use]
+    pub fn referenced_materials(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for menu in self.menus.values() {
+            out.push(menu.window_background.clone());
+            for item in &menu.items {
+                out.push(item.background.clone());
+                out.extend(item.material_exp.split_whitespace().filter_map(|token| {
+                    let hex = token.strip_prefix("s:")?;
+                    let bytes = (0..hex.len() / 2)
+                        .map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
+                        .collect::<Option<Vec<u8>>>()?;
+                    String::from_utf8(bytes).ok()
+                }));
+            }
+        }
+        out.retain(|name| !AssetRef::bare_name(name).is_empty());
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+fn walk_menu_zone(path: &Path) -> Result<MenuSink, String> {
     let image = open_zone(path).map_err(|e| e.to_string())?;
     let header = image.header().map_err(|e| e.to_string())?;
     let mut memory = ZoneMemory::for_header(&header);
@@ -622,7 +693,7 @@ fn load_menu_catalog_with_iwd(path: &Path, games: Option<&Path>) -> Result<MenuC
         Some((index, ty, slot)) => format!("asset #{index} {} at {slot:?}: {error:?}", ty.name()),
         None => format!("asset table: {error:?}"),
     })?;
-    Ok(sink.finish_and_take(games))
+    Ok(sink)
 }
 
 #[derive(Clone, Copy)]

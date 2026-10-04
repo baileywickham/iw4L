@@ -163,6 +163,13 @@ pub const OP_GETMAPNAME: i32 = 0xA1;
 
 pub const OP_SCOREBOARDEXTERNALMUTENOTICE: i32 = 0x9E;
 
+/// SP menus only (`eog_notify_newstars`): `( selector, field )` reads the local profile field.
+pub const OP_SP_GETPROFILEDATA: i32 = 0xA7;
+
+/// SP menus only: `( string, index )` is the character at `index` (a digit of
+/// `missionsohighestdifficulty`).
+pub const OP_SP_GETCHARBYINDEX: i32 = 0xAD;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PartyFlag {
     InLobby,
@@ -307,6 +314,11 @@ pub trait ExprHost {
     fn player_data(&self, path: &[Operand]) -> Result<Operand, ExprError> {
         let _ = path;
         Err(ExprError::UnsupportedOp(OP_GETPLAYERDATA))
+    }
+
+    fn profile_data(&self, field: &str) -> Result<Operand, ExprError> {
+        let _ = field;
+        Err(ExprError::UnsupportedOp(OP_SP_GETPROFILEDATA))
     }
 
     fn player_card_info(&self, field: i32, lookup: i32, slot: i32) -> Result<Operand, ExprError> {
@@ -656,6 +668,26 @@ fn run_op(
             }
             let path = data.split_off(operand_base);
             data.push(host.player_data(&path)?);
+            Ok(())
+        }
+        OP_SP_GETPROFILEDATA => {
+            if operand_base > data.len() {
+                return Err(ExprError::StackUnderflow);
+            }
+            let args = data.split_off(operand_base);
+            let field = args.last().map(source_str).unwrap_or_default();
+            data.push(host.profile_data(&field)?);
+            Ok(())
+        }
+        OP_SP_GETCHARBYINDEX => {
+            let index = source_int(&pop_data(data)?);
+            let text = source_str(&pop_data(data)?);
+            let letter = usize::try_from(index)
+                .ok()
+                .and_then(|index| text.chars().nth(index))
+                .map(String::from)
+                .unwrap_or_default();
+            data.push(Operand::Str(letter));
             Ok(())
         }
         OP_NOOP | OP_COMMA => Ok(()),

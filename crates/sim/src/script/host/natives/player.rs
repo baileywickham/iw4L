@@ -67,7 +67,26 @@ fn client_dvar_value(value: &Value, params: &[Value]) -> Result<String, String> 
     Ok(out)
 }
 
-fn publish_client_dvar(world: &mut World, client: u32, name: &str, value: String) {
+fn force_laser(world: &mut World, receiver: &Value, on: bool) {
+    let Ok(id) = client_of(world, receiver) else {
+        return;
+    };
+    if let Some(ps) = FrameWorld::from_world(world).player_mut(id) {
+        if on {
+            ps.e_flags |= playerstate_iw4::eflags::LASER;
+        } else {
+            ps.e_flags &= !playerstate_iw4::eflags::LASER;
+        }
+    }
+    diag::info!(
+        Sim,
+        "spec ops: client {} laser {}",
+        id.0,
+        if on { "on" } else { "off" }
+    );
+}
+
+pub(super) fn publish_client_dvar(world: &mut World, client: u32, name: &str, value: String) {
     let value = if let Some(setting) = crate::TargetBoxDvar::named(name) {
         let Some(value) = setting.parse(&value) else {
             return;
@@ -1335,6 +1354,16 @@ fn register_body(registry: &mut NativeRegistry) {
         if let Some(ps) = FrameWorld::from_world(world).player_mut(id) {
             ps.e_flags &= !playerstate_iw4::eflags::RADAR_JAM;
         }
+        Ok(Value::Undefined)
+    });
+    // SP `laserForceOn` (co_hunted's designator, the AC-130 gunner): the player's weapon
+    // draws its laser. Script models (`tag_laser` fakes) keep the no-op.
+    registry.register(Method, "laserforceon", |world, receiver, _| {
+        force_laser(world, receiver, true);
+        Ok(Value::Undefined)
+    });
+    registry.register(Method, "laserforceoff", |world, receiver, _| {
+        force_laser(world, receiver, false);
         Ok(Value::Undefined)
     });
 }

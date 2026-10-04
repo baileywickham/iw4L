@@ -136,10 +136,43 @@ pub(crate) fn eog_summary(world: &mut World, menu: &str) {
     }
 }
 
+/// Saved view-scale dvars reach the clients that draw them: `cg_fovScale` scales every
+/// player's FOV, `cg_playerFovScale<N>` the FOV of player N (`_ac130` zooms the gunner per
+/// weapon, `_cobrapilot` the pilot). The client multiplies both into its lens FOV.
+fn view_fov_scale(world: &mut World, name: &str, value: Option<&Value>) {
+    let targets: Vec<u32> = {
+        let players = world.resource::<Runtime>().players.keys().copied();
+        match name.strip_prefix("cg_playerfovscale") {
+            Some(index) => match index.parse::<usize>() {
+                Ok(index) => players.skip(index).take(1).collect(),
+                Err(_) => return,
+            },
+            None if name == "cg_fovscale" => players.collect(),
+            None => return,
+        }
+    };
+    let scale = match value {
+        Some(Value::Float(v)) => *v,
+        Some(Value::Int(v)) => *v as f32,
+        Some(Value::String(text)) => text.trim().parse().unwrap_or(1.0),
+        _ => 1.0,
+    };
+    let dvar = if name == "cg_fovscale" {
+        "cg_fovscale"
+    } else {
+        "cg_playerfovscale"
+    };
+    for client in targets {
+        diag::info!(Sim, "spec ops: client {client} {dvar} {scale:.3}");
+        super::player::publish_client_dvar(world, client, dvar, format!("{scale}"));
+    }
+}
+
 /// Logs the difficulty `_gameskill` applied to a player when it changes: the skill the scripts
 /// read and the player fields actor hits and incoming damage use.
 fn log_difficulty(world: &mut World, player: u64, skill: i32) {
-    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    // Per player: two players alternate here every frame in co-op.
+    static LAST: std::sync::Mutex<BTreeMap<u64, String>> = std::sync::Mutex::new(BTreeMap::new());
     let mut runtime = world.resource_mut::<Runtime>();
     let fields = [
         "attackeraccuracy",
@@ -151,9 +184,9 @@ fn log_difficulty(world: &mut World, player: u64, skill: i32) {
     let mut last = LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if *last != line {
+    if last.get(&player) != Some(&line) {
         diag::info!(Sim, "spec ops: player {player} {line}");
-        *last = line;
+        last.insert(player, line);
     }
 }
 
@@ -210,9 +243,16 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
     registry.register(Function, "target_setturretaquire", |_, _, _| {
         Ok(Value::Undefined)
     });
-    if let Some(set_dvar) = registry.get(Function, "setdvar") {
-        registry.register(Function, "setsaveddvar", set_dvar);
-    }
+    registry.register(Function, "setsaveddvar", |world, receiver, args| {
+        let set_dvar = world
+            .resource::<NativeRegistry>()
+            .get(Function, "setdvar")
+            .ok_or("setdvar is not bound")?;
+        let result = set_dvar(world, receiver, args)?;
+        let name = string(args, 0)?.to_ascii_lowercase();
+        view_fov_scale(world, &name, args.get(1));
+        Ok(result)
+    });
     // SP `notifyOnCommand( notify, command )` binds the command for every player.
     registry.register(Function, "notifyoncommand", |world, _, args| {
         let bind = world

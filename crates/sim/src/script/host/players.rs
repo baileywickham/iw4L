@@ -1138,7 +1138,8 @@ pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<V
     if let Some(default) = match name {
         "maxvisibledist" => Some(Value::Float(8192.0)),
         "attackeraccuracy" => Some(Value::Float(1.0)),
-        "threatbias" | "ignoreme" => Some(Value::Int(0)),
+        // `laststand` is written by `_coop` only; solo achievement checks read it.
+        "threatbias" | "ignoreme" | "laststand" => Some(Value::Int(0)),
         _ => None,
     } && single_player(world)
     {

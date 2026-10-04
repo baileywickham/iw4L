@@ -432,7 +432,11 @@ fn publish_client_action_input(
             }
         }
         let keys = out.client.keys;
-        out.scripted_ids.clear();
+        // Held pairs are re-sent below (the reset dropped them); one-shot commands
+        // (`weapnext`, `+actionslot N`) fire once per scripted press, not every
+        // unfocused frame.
+        out.scripted_ids
+            .retain(|id| *id >= input_iw4::HOLD_PAIR_LIMIT || (15..=22).contains(id));
         out.client = input_iw4::ClientInput {
             keys,
             ..Default::default()

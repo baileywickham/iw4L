@@ -762,8 +762,15 @@ pub fn tick_fpv_viewmodel(
         if let Some(bolt) = frame.secondary_bolt.take() {
             bolts.set_pose(1, bolt);
         }
+        let forced_laser = presented
+            .viewweapon_player(local.0)
+            .is_some_and(|ps| ps.e_flags & playerstate_iw4::eflags::LASER != 0);
         for (hand, pose) in frame.poses.iter_mut().enumerate() {
             if let Some(pose) = pose.as_mut() {
+                // SP `laserForceOn`: a weapon without `tag_laser` lases from its flash tag.
+                if forced_laser && pose.bolt.tags.laser.is_none() {
+                    pose.bolt.tags.laser = pose.bolt.tags.flash;
+                }
                 bolts.set_pose(hand, core::mem::take(&mut pose.bolt));
             }
         }

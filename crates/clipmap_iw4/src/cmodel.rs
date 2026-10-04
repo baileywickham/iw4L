@@ -1,4 +1,4 @@
-use trace_iw4::{BrushRef, Trace, trace_capsule};
+use trace_iw4::{Trace, trace_capsule};
 
 use crate::BrushView;
 
@@ -149,12 +149,11 @@ fn capsule_vs_cmodel<B: BrushView>(
     let first = cmodel.first_brush as usize;
     let last = first.saturating_add(cmodel.num_brushes as usize);
     let ids = leafbrushes.get(first..last).unwrap_or(&[]);
-    let selected: alloc::vec::Vec<BrushRef<'_>> = ids
+    let selected = ids
         .iter()
         .filter_map(|&id| brushes.get(id as usize))
-        .map(crate::brush_ref)
-        .collect();
-    trace_capsule(selected.iter().copied(), start, end, mins, maxs, mask)
+        .map(crate::brush_ref);
+    trace_capsule(selected, start, end, mins, maxs, mask)
 }
 
 fn angles_to_axis(angles: [f32; 3]) -> [[f32; 3]; 3] {

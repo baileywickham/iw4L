@@ -77,6 +77,7 @@ pub(crate) fn update_reticle(
     cg_clock: Res<FrameClock>,
     mut quads: Query<(&ReticleQuad, &mut Node, &mut ImageNode, &mut UiTransform)>,
     life: (MessageReader<LifeStarted>, Res<ViewSubject>),
+    menus: Res<crate::menus::ScriptMenus>,
 ) {
     let (mut started, view) = life;
     for ev in started.read() {
@@ -92,6 +93,11 @@ pub(crate) fn update_reticle(
         return;
     };
     if ps.pm_type >= playerstate_iw4::PM_TYPE_DEAD {
+        hide_all(&mut quads);
+        return;
+    }
+    // The Spec Ops end-of-game summary covers the view; no crosshair over it.
+    if menus.stack.iter().any(|menu| menu.name.contains("eog_")) {
         hide_all(&mut quads);
         return;
     }

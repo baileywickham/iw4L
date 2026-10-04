@@ -960,7 +960,9 @@ fn publish_remote_dobj(
     bolts.flash = target(bolt_bones[0]);
     bolts.brass = target(bolt_bones[1]);
     bolts.knife = target(bolt_bones[2]);
-    bolts.laser = target(bolt_bones[3]);
+    // A forced laser (SP `laserForceOn`) leaves the flash tag of a weapon without `tag_laser`.
+    let forced = runtime.next_state.e_flags & playerstate_iw4::eflags::LASER != 0;
+    bolts.laser = target(bolt_bones[3]).or_else(|| forced.then(|| target(bolt_bones[0])).flatten());
     Ok(dobj.skin_matrices(world))
 }
 
