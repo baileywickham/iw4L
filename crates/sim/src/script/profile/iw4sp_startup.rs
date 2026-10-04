@@ -27,7 +27,10 @@ impl Iw4SpStartup {
             map.clone(),
         ];
         for module in modules {
-            if module.starts_with("aitype/") || ENGINE_ANIMSCRIPTS.contains(&module) {
+            if module.starts_with("aitype/")
+                || module.starts_with("animscripts/dog/")
+                || ENGINE_ANIMSCRIPTS.contains(&module)
+            {
                 roots.push(module.to_owned());
             }
         }

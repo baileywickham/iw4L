@@ -1012,7 +1012,10 @@ fn register_placement(registry: &mut NativeRegistry) {
         let id = entity_id(world, receiver)?;
         let tag = string(args, 0)?;
         let origin = vector_field(world, id, "origin");
-        let offset = super::super::presence::tag_offset(world, id, &tag).unwrap_or(ZERO);
+        let Some(offset) = super::super::presence::tag_offset(world, id, &tag) else {
+            let eye = super::super::sentients::actor_eye_tag(world, id, &tag);
+            return Ok(Value::Vector(eye.map_or(origin, |(at, _)| at)));
+        };
         let axis = math_iw4::angles_to_axis(vector_field(world, id, "angles"));
         Ok(Value::Vector(std::array::from_fn(|i| {
             origin[i] + axis[0][i] * offset[0] + axis[1][i] * offset[1] + axis[2][i] * offset[2]
@@ -1052,6 +1055,11 @@ fn register_placement(registry: &mut NativeRegistry) {
             Some((_, axis)) => Ok(Value::Vector(math_iw4::axis_to_angles(axis))),
             None if tag.eq_ignore_ascii_case("tag_origin") => {
                 Ok(Value::Vector(vector_field(world, id, "angles")))
+            }
+            None if let Some((_, angles)) =
+                super::super::sentients::actor_eye_tag(world, id, &tag) =>
+            {
+                Ok(Value::Vector(angles))
             }
             None => Err(format!(
                 "tag '{tag}' does not exist on entity ({})",

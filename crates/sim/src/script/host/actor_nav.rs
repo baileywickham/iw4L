@@ -630,7 +630,12 @@ pub(crate) fn switch_animscript(
             crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
         }
         if *name != wanted {
-            run_script(world, &format!("animscripts/{name}::end_script"), receiver);
+            let module = super::actors::animscript_module(world, id, name);
+            run_script(
+                world,
+                &format!("animscripts/{module}::end_script"),
+                receiver,
+            );
         }
     }
     if !world.resource::<Runtime>().live(&object) {
@@ -647,9 +652,10 @@ pub(crate) fn switch_animscript(
         a.animscript = Some((wanted.clone(), 0));
         a.animscript_started_ms = now;
     });
+    let module = super::actors::animscript_module(world, id, &wanted);
     let serial = run_script(
         world,
-        &format!("animscripts/{wanted}::main"),
+        &format!("animscripts/{module}::main"),
         Value::Object(object),
     );
     with_actor(world, id, |a| {
@@ -698,9 +704,10 @@ fn begin_custom(world: &mut World, receiver: &Value, function: u32) -> Result<()
         if thread_running(world, serial) {
             crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
         }
+        let module = super::actors::animscript_module(world, id, &name);
         run_script(
             world,
-            &format!("animscripts/{name}::end_script"),
+            &format!("animscripts/{module}::end_script"),
             receiver.clone(),
         );
     }

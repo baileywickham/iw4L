@@ -28,6 +28,7 @@ pub(crate) mod dev_aim;
 pub(crate) mod sentients;
 pub mod spectators;
 pub mod tables;
+pub(crate) mod test_aim;
 pub mod triggers;
 pub mod turrets;
 pub(crate) mod vehicle_drive;

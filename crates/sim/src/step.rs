@@ -352,6 +352,7 @@ fn run_players_system(ecs: &mut World) {
             let mut cmd = *cmd;
             crate::script::autoaim(world.ecs(), id.0, &mut cmd);
             crate::script_player::constrain_cmd(&mut world, *id, &mut cmd);
+            crate::script::auto_aim(world.ecs(), id.0, &cmd);
             crate::script::select_location(world.ecs(), id.0, &mut cmd, old_buttons);
             if world
                 .client_meta(*id)

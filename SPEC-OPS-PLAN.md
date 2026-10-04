@@ -176,9 +176,9 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
 - Complete: crossing 0:27.80, escape_airport 0:49.25, intel_boneyard 1:08.15 (both laptops tried; `_pmc` picks one at random), defuse_favela_escape 1:01.90 (briefcase use → link, defuse weapon, 4.5 s use bar), demo_so_bridge 5:05.70 (36/36 cars, `give ammo` between RPG shots).
 - SP rockets flew 23° up: `fire_missile` added the def's `projectileSpeedUp` (rpg_player 500) to a linear rocket; IW4 `G_FireRocket` launches along the aim only, so SP ignores it (MP/T5 unchanged).
 - Radius damage reaches an entity at its own origin when that is nearer than its linked collision brush (so_bridge slide cars carry their slide clip ~500 u away; rockets on them did nothing).
-- `IW4L_AUTOAIM=1` test aimer (`script/host/autoaim.rs`, `=2` logs targets, `=3` a census of hostiles within 600 u): turns the player's command at the nearest hostile actor in clear sight and fires every other tick; shots go through the normal weapon path. `IW4L_GSC_TRACE_NOTIFY=a,b` logs those notifies on any entity/struct (download progress lives on structs).
+- `IW4L_AUTOFIRE=1` test aimer (`script/host/autoaim.rs`, `=2` logs targets, `=3` a census of hostiles within 600 u): turns the player's command at the nearest hostile actor in clear sight and fires every other tick; shots go through the normal weapon path. `IW4L_GSC_TRACE_NOTIFY=a,b` logs those notifies on any entity/struct (download progress lives on structs).
 - SP path vehicles (arcadia's Stryker): `attachpath` puts the vehicle on the node (it spawned 13 k u away and spent 70 s driving to its path), a script speed of 0 holds at the next node (it used to restart at the 20 mph default), and `veh_pathdir = "reverse"` follows the path back through the nodes that target the current one (the extraction backs down the street to `vnode_house1`).
-- so_download_arcadia: with `IW4L_AUTOAIM=1` and a patrol around each laptop, the mission completes (Air, 7:45.70: three downloads, then the Stryker backs up to the extraction point); the defenders must all die or stay > 256 u away for 60 s, and the interior guards are behind walls, so standing at the laptop is not enough.
+- so_download_arcadia: with `IW4L_AUTOFIRE=1` and a patrol around each laptop, the mission completes (Air, 7:45.70: three downloads, then the Stryker backs up to the extraction point); the defenders must all die or stay > 256 u away for 60 s, and the interior guards are behind walls, so standing at the laptop is not enough.
 - `~/bin/iw4l-air` expanded `IW4L_AIR_TIMEOUT` on the Air (always 300 s); it now expands locally.
 
 **Wave and defense missions (2026-10-03)** — rows in `docs/spec-ops/MISSIONS.md`, scripts in `context/runs/` (worktree scratch)
@@ -188,3 +188,24 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
 - Open: SP helicopters take no bullet damage in defense_invasion; ownerless `MagicBullet` (UAV hellfire) is refused; one takeover run had a juggernaut frozen in `move` with a full path (not reproduced).
 - Regressions (Air): The Pit completes (2:28.10, 24/24), snowrace1 completes (0:58.85), `mp_boneyard` spawn 0 → InGame.
 
+
+**Stealth + breach group to success (2026-10-03)** — rows in `docs/spec-ops/MISSIONS.md`, scripts in `context/runs/`
+- All six complete from scripted runs (god + teleports between the missions' own triggers; Regular): so_showers_gulag
+  0:40.85, so_sabotage_cliffhanger 0:55.25, so_forest_contingency 1:55.55, so_hidden_so_ghillies 2:03.75,
+  so_assault_oilrig 2:55.15 (both breaches, deck 2 rappellers and heli, `barracks_cleared`), so_takeover_estate 2:16.15
+  (40/40 PMC kills, ADS). Air repeats: showers 0:41.85, sabotage 0:55.55, forest 1:56.25, hidden 2:04.45, oilrig 2:56.65
+  (teleport waits are wall-clock, so times drift by ~1 s). Regressions on the Air: Pit 2:28.25, snowrace1 0:58.85, mp_boneyard InGame.
+- Test aimer `IW4L_AUTOAIM` (`script/host/test_aim.rs`, one call in `step.rs` after `constrain_cmd`): while attack is held
+  the view turns (through `delta_angles`) to the nearest hostile actor with a clear shot line; `=2` logs, `=3` also moves
+  the player once a second to a path node that sees the nearest hostile when none is within 1500 in sight. A target aimed at 4 s
+  without a hit is skipped for 20 s.
+- Run findings: large `trigger_multiple_flag_set` volumes are rotated slabs — teleport to the logged hull centre, not
+  into the bounds box (hidden's church/houses/barn/valley triggers never fired before); estate's enemies populate only
+  after the `mission_start` ring round the PMC start is touched; `makeusable` script models (sabotage C4) work.
+- Actor `tag_eye` when the body model has none (it is on the head, which the sim does not pose): `gettagangles` /
+  `gettagorigin` answer with the actor's eye and facing (stealth corpse discovery errored on `body_opforce_arctic_*`;
+  `gettagorigin` returned the feet for any missing tag).
+- Dogs: an aitype's `animTree` (`dog.atr`) replaces `generic_human` after `aitype::main`; species `dog` runs
+  `animscripts/dog/dog_<state>` (init/move/stop/combat/death/pain/flashed/scripted; other states → dog_combat), and the
+  dog animscripts are startup roots when the zones carry them. Dog melee on the player is not done.
+- Open: heli `mgturret` `startfiring` errors once in oilrig; dog melee (`meleebiteattackplayer` scenes).

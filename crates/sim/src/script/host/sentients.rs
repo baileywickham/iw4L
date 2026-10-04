@@ -33,6 +33,22 @@ fn receiver_actor(world: &World, receiver: &Value) -> Result<(ActorId, u64), Str
     }
 }
 
+/// `tag_eye` of an actor whose body model has none (it is on the attached head,
+/// which the sim does not pose): the eye at stance height, looking along the
+/// actor's facing. `None` for any other tag or entity.
+pub(crate) fn actor_eye_tag(
+    world: &mut World,
+    object: u64,
+    tag: &str,
+) -> Option<([f32; 3], [f32; 3])> {
+    if !tag.eq_ignore_ascii_case("tag_eye") {
+        return None;
+    }
+    actor_of(world, object)?;
+    let yaw = vector_field(world, object, "angles")[1];
+    Some((eye(world, object), [0.0, yaw, 0.0]))
+}
+
 /// Where a sentient sees from: a player's view, an actor's `tag_eye` (or its
 /// stance height), any other entity's origin.
 pub(crate) fn eye(world: &mut World, object: u64) -> [f32; 3] {

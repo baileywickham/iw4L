@@ -1,6 +1,6 @@
-//! Test aimer (`IW4L_AUTOAIM=1`, `=2` also logs each new target): in a Spec Ops
+//! Test aimer (`IW4L_AUTOFIRE=1`, `=2` also logs each new target): in a Spec Ops
 //! load, a player's command is turned at the nearest hostile actor in clear
-//! sight (head height, within `IW4L_AUTOAIM_RANGE`, default 2500) and fires on
+//! sight (head height, within `IW4L_AUTOFIRE_RANGE`, default 2500) and fires on
 //! every other tick, so semi-automatic weapons cycle. Authority only; the
 //! shots go through the normal weapon and damage path. Scripted runs use it
 //! where a mission needs kills (`download` waves) that fixed `look`s can't aim.
@@ -20,7 +20,7 @@ const MASK_SHOT_SIGHT: u32 = 0x0801;
 fn mode() -> u8 {
     static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| {
-        std::env::var("IW4L_AUTOAIM")
+        std::env::var("IW4L_AUTOFIRE")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
@@ -30,7 +30,7 @@ fn mode() -> u8 {
 fn range() -> f32 {
     static RANGE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *RANGE.get_or_init(|| {
-        std::env::var("IW4L_AUTOAIM_RANGE")
+        std::env::var("IW4L_AUTOFIRE_RANGE")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2500.0)

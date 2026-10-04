@@ -212,31 +212,34 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
         .resource_mut::<ActorPool>()
         .actors
         .insert(actor, Actor::new(object, team, origin));
-    match FrameWorld::from_world(world)
-        .content()
-        .script_anims()
-        .tree(ANIMTREE)
-    {
-        Ok(tree) => {
-            world
-                .resource_mut::<super::mechanics::Mechanics>()
-                .anims
-                .insert(object, EntityAnim::new(tree));
-        }
-        Err(error) => diag::warn!(Sim, "actor: {error}"),
-    }
+    use_tree(world, object, ANIMTREE);
     let receiver = Value::Object(object);
     run_script(
         world,
         &format!("{}::main", aitype(&classname)),
         receiver.clone(),
     );
+    // The aitype names its tree (`self.animTree = "dog.atr"`); humans keep the default.
+    let tree = match world
+        .resource_mut::<Runtime>()
+        .object_field(object, "animtree")
+    {
+        Value::String(name) => name.trim_end_matches(".atr").to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    if !tree.is_empty() && tree != ANIMTREE {
+        use_tree(world, object, &tree);
+    }
     {
         let mut runtime = world.resource_mut::<Runtime>();
         let health = runtime.object_field(object, "health");
         runtime.set_object_field(object, "maxhealth", health);
     }
-    if let Some(serial) = run_script(world, "animscripts/init::main", receiver.clone()) {
+    let init = format!(
+        "animscripts/{}::main",
+        animscript_module(world, actor, "init")
+    );
+    if let Some(serial) = run_script(world, &init, receiver.clone()) {
         diag::warn!(
             Sim,
             "actor: animscripts/init::main waited (thread {serial})"
@@ -423,6 +426,41 @@ fn team_matches(team: &str, wanted: &str) -> bool {
         "all" => true,
         "bad_guys" => team == "axis" || team == "team3",
         wanted => team == wanted,
+    }
+}
+
+fn use_tree(world: &mut World, object: u64, name: &str) {
+    match FrameWorld::from_world(world)
+        .content()
+        .script_anims()
+        .tree(name)
+    {
+        Ok(tree) => {
+            world
+                .resource_mut::<super::mechanics::Mechanics>()
+                .anims
+                .insert(object, EntityAnim::new(tree));
+        }
+        Err(error) => diag::warn!(Sim, "actor: {error}"),
+    }
+}
+
+/// The module an engine animscript state runs for this actor's species: dogs
+/// run `animscripts/dog/dog_<state>` (states they have no script for fight).
+pub(crate) fn animscript_module(world: &World, actor: ActorId, state: &str) -> String {
+    let dog = world
+        .resource::<ActorPool>()
+        .actors
+        .get(&actor)
+        .is_some_and(|a| &*a.species == "dog");
+    if !dog {
+        return state.to_owned();
+    }
+    match state {
+        "init" | "move" | "stop" | "combat" | "death" | "pain" | "flashed" | "scripted" => {
+            format!("dog/dog_{state}")
+        }
+        _ => "dog/dog_combat".to_owned(),
     }
 }
 

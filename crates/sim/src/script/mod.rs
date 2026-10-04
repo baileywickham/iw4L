@@ -38,6 +38,7 @@ pub(crate) use host::presence::sync_presence;
 pub use host::registry::{Native, NativeRegistry};
 pub(crate) use host::restart::restart_level;
 pub(crate) use host::autoaim::autoaim;
+pub(crate) use host::test_aim::auto_aim;
 pub(crate) use host::vehicle_drive::drive_input;
 pub(crate) use host::weapons::sync_engine_events;
 pub(crate) use host::weapons::weapon_fired;
