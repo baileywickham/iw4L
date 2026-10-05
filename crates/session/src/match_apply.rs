@@ -456,6 +456,7 @@ pub fn apply_prepared_match(
         content.set_weapon_world_models(weapons.0.world_models_table());
         content.set_weapon_projectile_models(weapons.0.projectile_models_table());
         content.set_weapon_melee_only(combat_table::melee_only_from_registry(&weapons.0));
+        content.set_weapon_ai_accuracy(weapons.0.ai_accuracy_table());
         content.set_weapon_script_sounds(combat_table::script_sounds_from_registry(&weapons.0));
         install_team_voice_prefixes(&mut content, catalog.as_deref(), identity.as_deref(), &zone);
         install_shocks(&mut content, catalog.as_deref(), &map_shocks);

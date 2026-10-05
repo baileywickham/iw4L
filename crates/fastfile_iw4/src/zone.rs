@@ -946,6 +946,21 @@ pub struct WeaponIdleCapture {
     pub idle_prone_factor: f32,
 }
 
+/// Knots a captured AI accuracy graph keeps.
+pub const WEAPON_AI_ACCURACY_MAX_KNOTS: usize = 16;
+
+/// A weapon's AI accuracy inputs: the complete definition's
+/// `aiVsAiAccuracyGraphKnots` / `aiVsPlayerAccuracyGraphKnots` (distance
+/// fraction, accuracy) and the body's `fightDist` / `maxDist`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WeaponAiAccuracyCapture {
+    pub fight_dist: f32,
+    pub max_dist: f32,
+    /// `[ai vs ai, ai vs player]`.
+    pub knots: [[[f32; 2]; WEAPON_AI_ACCURACY_MAX_KNOTS]; 2],
+    pub knot_counts: [u8; 2],
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WeaponGeometry {
     pub name: Option<Ptr>,
@@ -1342,6 +1357,8 @@ pub struct WeaponGeometry {
     pub max_damage_range: f32,
 
     pub min_damage_range: f32,
+
+    pub ai_accuracy: WeaponAiAccuracyCapture,
 
     pub kick: WeaponKickCapture,
 

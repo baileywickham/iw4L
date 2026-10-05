@@ -3,6 +3,7 @@
 
 mod ads_allow;
 mod ads_overlay;
+mod ai_accuracy;
 mod ammo;
 pub mod event_sound;
 mod fire_sound;
@@ -31,6 +32,9 @@ mod weaponstate;
 
 pub use ads_allow::{AdsAllowWeaponFacts, OTHER_FLAG_PLAYER, WEAP_FLAG_NO_ADS, is_ads_allowed};
 pub use ads_overlay::{AdsOverlayScrub, ads_overlay_scrub};
+pub use ai_accuracy::{
+    AI_ACCURACY_GRAPH_MAX_KNOTS, AI_ACCURACY_MAX_DISTANCE, AiAccuracyGraph, WeaponAiAccuracy,
+};
 pub use ammo::{
     AMMO_TABLE_BYTES, AMMOCLIP_TABLE_BYTES, WEAPON_DATA_BYTES, ammo_row_present, ammo_table_key,
     clip_row_present, clip_table_key, create_akimbo_viewmodel_trees, ensure_clip_row,

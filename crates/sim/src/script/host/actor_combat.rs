@@ -851,8 +851,8 @@ fn become_corpse(world: &mut World, id: ActorId, object: u64) {
     );
 }
 
-/// AI-vs-player accuracy by distance where the weapon's graph is not loaded.
-fn accuracy_at(dist: f32) -> f32 {
+/// AI accuracy by distance for a weapon without accuracy graphs (MP stand-ins).
+fn fallback_accuracy_at(dist: f32) -> f32 {
     const GRAPH: [(f32, f32); 5] = [
         (0.0, 1.0),
         (300.0, 0.9),
@@ -868,6 +868,212 @@ fn accuracy_at(dist: f32) -> f32 {
     }
     GRAPH[GRAPH.len() - 1].1
 }
+
+/// `IW4L_AI_ACCURACY_LOG=1`: one line per actor shot at a sentient with every
+/// accuracy term, the distance and whether the roll hit.
+fn accuracy_log() -> bool {
+    static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOG.get_or_init(|| std::env::var("IW4L_AI_ACCURACY_LOG").is_ok_and(|v| v == "1"))
+}
+
+/// Field the last `updateplayersightaccuracy` result is kept under (1 until then).
+const SIGHT_ACCURACY_FIELD: &str = "playersightaccuracy";
+
+/// The terms `Actor_GetFinalAccuracy` multiplies.
+struct AccuracyTerms {
+    dist: f32,
+    vs_player: bool,
+    graphed: bool,
+    weapon: f32,
+    attacker: f32,
+    stance: f32,
+    movement: f32,
+    sight: f32,
+    attacker_count: f32,
+}
+
+/// Hostile actors whose enemy is `player` and that see it now: the player's
+/// attacker count (each actor's sight result may be up to 250 ms old).
+fn player_attacker_count(world: &mut World, player: u64) -> usize {
+    let attackers: Vec<(i32, ActorId, u64)> = {
+        let runtime = world.resource::<Runtime>();
+        let mut rows: Vec<(i32, ActorId, u64)> = world
+            .resource::<ActorPool>()
+            .actors
+            .iter()
+            .filter(|(_, a)| a.dying.is_none() && a.enemy == Some(player))
+            .filter_map(|(id, a)| Some((runtime.entities.get(&a.object)?.number, *id, a.object)))
+            .collect();
+        rows.sort_by_key(|(number, _, _)| *number);
+        rows
+    };
+    attackers
+        .into_iter()
+        .filter(|&(_, id, object)| can_see(world, id, object, player, 250))
+        .count()
+}
+
+/// `ai_accuracy_attackerCountDecrease` per attacker past the first, up to
+/// `ai_accuracy_attackerCountMax` attackers.
+fn attacker_count_accuracy(world: &mut World, player: u64) -> f32 {
+    let count = player_attacker_count(world, player);
+    if count <= 1 {
+        return 1.0;
+    }
+    let decrease = dvar_float(world, "ai_accuracy_attackercountdecrease").unwrap_or(0.75);
+    let max = dvar_float(world, "ai_accuracy_attackercountmax").map_or(4, |v| v.max(0.0) as usize);
+    decrease.powi(count.min(max) as i32 - 1)
+}
+
+/// `Actor_GetFinalAccuracy`: the actor's `accuracy` × the target's
+/// `attackeraccuracy` × the script's mod × the weapon graph at the sentients'
+/// distance / 4000 (AI-vs-player distance scaled by `ai_accuracyDistScale`).
+/// Against a player also: stance (prone 0.5, crouch 0.75), lateral movement
+/// (1 − speed/250, at least 0.3), the last `updateplayersightaccuracy` and,
+/// unless `noattackeraccuracymod`, the attacker-count decrease. Clamped to 0..1.
+fn final_accuracy(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    enemy: u64,
+    weapon: u32,
+    accuracy: f32,
+    accuracy_mod: f32,
+) -> (f32, AccuracyTerms) {
+    let from = origin(world, object);
+    let to = origin(world, enemy);
+    let offset = sub(to, from);
+    let dist = length(offset);
+    let player = world
+        .resource::<Runtime>()
+        .player_client(enemy)
+        .map(crate::ClientId);
+    let graph_dist = match player {
+        Some(_) => dist * dvar_float(world, "ai_accuracydistscale").unwrap_or(1.0),
+        None => dist,
+    };
+    let graph = FrameWorld::from_world(world)
+        .weapon_ai_accuracy(weapon)
+        .and_then(|row| row.graph(player.is_some()).copied());
+    let weapon_accuracy = graph.map_or_else(
+        || fallback_accuracy_at(graph_dist),
+        |graph| graph.value_at_distance(graph_dist),
+    );
+    let attacker = match super::actors::actor_of(world, enemy) {
+        Some(other) => world
+            .resource::<ActorPool>()
+            .actors
+            .get(&other)
+            .map_or(1.0, |a| a.float_field("attackeraccuracy")),
+        None => number_field(world, enemy, "attackeraccuracy").unwrap_or(1.0),
+    };
+    let mut terms = AccuracyTerms {
+        dist,
+        vs_player: player.is_some(),
+        graphed: graph.is_some(),
+        weapon: weapon_accuracy,
+        attacker,
+        stance: 1.0,
+        movement: 1.0,
+        sight: 1.0,
+        attacker_count: 1.0,
+    };
+    if let Some(client) = player {
+        let (pm_flags, velocity) = FrameWorld::from_world(world)
+            .player(client)
+            .map_or((0, [0.0; 3]), |ps| (ps.pm_flags, ps.velocity));
+        terms.stance = if pm_flags & playerstate_iw4::pm_flags::PRONE != 0 {
+            0.5
+        } else if pm_flags & playerstate_iw4::pm_flags::CROUCH != 0 {
+            0.75
+        } else {
+            1.0
+        };
+        let dir = normalized(offset);
+        let lateral = (dir[1] * velocity[0] - dir[0] * velocity[1] + dir[2] * velocity[2]).abs();
+        terms.movement = (1.0 - lateral.min(250.0) / 250.0).max(0.3);
+        let (sight, no_attacker_mod) =
+            world
+                .resource::<ActorPool>()
+                .actors
+                .get(&id)
+                .map_or((1.0, false), |a| {
+                    (
+                        match a.fields.get(SIGHT_ACCURACY_FIELD) {
+                            Some(Value::Float(v)) => *v,
+                            _ => 1.0,
+                        },
+                        a.float_field("noattackeraccuracymod") != 0.0,
+                    )
+                });
+        terms.sight = sight;
+        if !no_attacker_mod {
+            terms.attacker_count = attacker_count_accuracy(world, enemy);
+        }
+    }
+    let total = accuracy
+        * terms.attacker
+        * accuracy_mod
+        * terms.weapon
+        * terms.stance
+        * terms.movement
+        * terms.sight
+        * terms.attacker_count;
+    (total.clamp(0.0, 1.0), terms)
+}
+
+/// `updatePlayerSightAccuracy`: how much of its player enemy the actor sees,
+/// from its eye to the enemy's eye and to 75/50/25% of the way from the
+/// enemy's feet to its eye (10 + 30 + 30 + 30 points), as 0.5 + 0.5 × points/100.
+/// 1 when the enemy is not a player.
+fn update_player_sight_accuracy(world: &mut World, id: ActorId, object: u64) {
+    let enemy = enemy_of(world, id).filter(|e| world.resource::<Runtime>().live(e));
+    let accuracy = match enemy {
+        Some(enemy) if world.resource::<Runtime>().player_client(enemy).is_some() => {
+            let from = eye(world, object);
+            let feet = origin(world, enemy);
+            let top = eye(world, enemy);
+            let ignore = {
+                let runtime = world.resource::<Runtime>();
+                TraceIgnore {
+                    client: runtime.player_client(enemy).map(crate::ClientId),
+                    other_client: None,
+                    model: runtime.entities.get(&object).and_then(|e| e.presence),
+                }
+            };
+            let mut points = 0.0;
+            for (frac, worth) in [(1.0, 10.0), (0.75, 30.0), (0.5, 30.0), (0.25, 30.0)] {
+                let to = [
+                    feet[0] + (top[0] - feet[0]) * frac,
+                    feet[1] + (top[1] - feet[1]) * frac,
+                    feet[2] + (top[2] - feet[2]) * frac,
+                ];
+                if matches!(
+                    entity_trace(world, from, to, MASK_AI_SIGHT, ignore),
+                    TraceOutcome::Miss { .. }
+                ) {
+                    points += worth;
+                }
+            }
+            0.5 + 0.5 * (points * 0.01)
+        }
+        _ => 1.0,
+    };
+    if accuracy_log() {
+        diag::info!(
+            Sim,
+            "actor sight accuracy: {} {accuracy:.2}",
+            label(world, object)
+        );
+    }
+    if let Some(a) = world.resource_mut::<ActorPool>().actors.get_mut(&id) {
+        a.fields
+            .insert(SIGHT_ACCURACY_FIELD, Value::Float(accuracy));
+    }
+}
+
+/// Line of sight for AI (`Actor_CanSeeEntityPoint`).
+const MASK_AI_SIGHT: u32 = 0x0801;
 
 pub(crate) fn dvar_float(world: &World, name: &str) -> Option<f32> {
     world
@@ -885,8 +1091,8 @@ fn shoot_at_pos(world: &mut World, target: u64) -> [f32; 3] {
 }
 
 /// `shoot( accuracyMod, shootOverride )`: one round from the muzzle. At the enemy
-/// the hit is rolled from `accuracy` × mod × distance graph × the target's
-/// `attackeraccuracy`; a miss passes beside it. An override position is shot as given.
+/// the hit is rolled from `final_accuracy`; a miss passes beside it. An override
+/// position is shot as given.
 fn shoot(
     world: &mut World,
     receiver: &Value,
@@ -929,19 +1135,8 @@ fn shoot(
         .or_else(|| shoot_pos.map(|pos| (pos, None)));
     let aim = match target {
         Some((pos, Some(enemy))) => {
-            let dist = length(sub(pos, from));
-            let dist_scale = dvar_float(world, "ai_accuracydistscale").unwrap_or(1.0);
-            let attacker_accuracy = match super::actors::actor_of(world, enemy) {
-                Some(other) => world
-                    .resource::<ActorPool>()
-                    .actors
-                    .get(&other)
-                    .map_or(1.0, |a| a.float_field("attackeraccuracy")),
-                None => number_field(world, enemy, "attackeraccuracy").unwrap_or(1.0),
-            };
-            let final_accuracy =
-                (accuracy * accuracy_mod * accuracy_at(dist * dist_scale) * attacker_accuracy)
-                    .clamp(0.0, 1.0);
+            let (final_accuracy, terms) =
+                final_accuracy(world, id, object, enemy, weapon, accuracy, accuracy_mod);
             let (roll, side, lift) = {
                 let mut pool = world.resource_mut::<ActorPool>();
                 (pool.random(), pool.random(), pool.random())
@@ -949,6 +1144,28 @@ fn shoot(
             if let Some(a) = world.resource_mut::<ActorPool>().actors.get_mut(&id) {
                 a.fields
                     .insert("finalaccuracy", Value::Float(final_accuracy));
+            }
+            if accuracy_log() {
+                diag::info!(
+                    Sim,
+                    "actor shot: {} weapon={weapon_name} at {} dist={:.0} muzzle_dist={:.0} vs={} graph={} \
+                     accuracy={accuracy:.3} mod={accuracy_mod:.3} target={:.3} weapon_acc={:.3} \
+                     stance={:.2} move={:.2} sight={:.2} attackers={:.3} final={final_accuracy:.3} \
+                     hit={}",
+                    label(world, object),
+                    label(world, enemy),
+                    terms.dist,
+                    length(sub(pos, from)),
+                    if terms.vs_player { "player" } else { "ai" },
+                    terms.graphed as u8,
+                    terms.attacker,
+                    terms.weapon,
+                    terms.stance,
+                    terms.movement,
+                    terms.sight,
+                    terms.attacker_count,
+                    (roll < final_accuracy) as u8,
+                );
             }
             if roll < final_accuracy {
                 pos
@@ -965,7 +1182,16 @@ fn shoot(
                 ]
             }
         }
-        Some((pos, None)) => pos,
+        Some((pos, None)) => {
+            if accuracy_log() {
+                diag::info!(
+                    Sim,
+                    "actor shot: {} weapon={weapon_name} at position (no accuracy roll)",
+                    label(world, object)
+                );
+            }
+            pos
+        }
         None => {
             let (forward, _, _) = math_iw4::angle_vectors(muzzle_angles);
             [
@@ -989,6 +1215,17 @@ fn shoot(
             "actor: {} first shot weapon={weapon_name} at {}",
             label(world, object),
             enemy.map_or_else(|| "position".into(), |e| label(world, e))
+        );
+    }
+    if shots == Some(1) && accuracy_log() {
+        let row = FrameWorld::from_world(world).weapon_ai_accuracy(weapon);
+        diag::info!(
+            Sim,
+            "actor accuracy graphs: weapon={weapon_name} fightdist={:?} maxdist={:?} ai_vs_ai={:?} ai_vs_player={:?}",
+            row.map(|r| r.fight_dist),
+            row.map(|r| r.max_dist),
+            row.and_then(|r| r.ai_vs_ai).map(|g| g.knots().to_vec()),
+            row.and_then(|r| r.ai_vs_player).map(|g| g.knots().to_vec()),
         );
     }
     if blank {
@@ -1640,8 +1877,12 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         receiver_actor(world, receiver)?;
         Ok(Value::Int(0))
     });
+    registry.register(Method, "updateplayersightaccuracy", |world, receiver, _| {
+        let (id, object) = receiver_actor(world, receiver)?;
+        update_player_sight_accuracy(world, id, object);
+        Ok(Value::Undefined)
+    });
     for name in [
-        "updateplayersightaccuracy",
         "clearpotentialthreat",
         "flagenemyunattackable",
         "stoplookat",

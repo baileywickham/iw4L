@@ -324,6 +324,7 @@ pub struct SimContentBuilder {
     shield_models: Vec<Option<Arc<xmodel_runtime::RetainedModelCapability>>>,
     weapon_projectile_models: Vec<String>,
     weapon_melee_only: Vec<bool>,
+    weapon_ai_accuracy: Vec<weapon_iw4::WeaponAiAccuracy>,
     weapon_script_sounds: Vec<WeaponScriptSounds>,
     equipment_runtime: Vec<EquipmentRuntimeFacts>,
     team_voice_prefix_allies: Option<String>,
@@ -485,6 +486,11 @@ impl SimContentBuilder {
 
     pub fn set_weapon_melee_only(&mut self, rows: Vec<bool>) {
         self.weapon_melee_only = rows;
+    }
+
+    /// Per weapon index: AI accuracy graphs and ranges (SP actors shoot with them).
+    pub fn set_weapon_ai_accuracy(&mut self, rows: Vec<weapon_iw4::WeaponAiAccuracy>) {
+        self.weapon_ai_accuracy = rows;
     }
 
     pub fn set_weapon_script_sounds(&mut self, rows: Vec<WeaponScriptSounds>) {
@@ -1224,6 +1230,15 @@ impl SimState {
 
     pub(crate) fn weapon_script_sounds(&self, weapon: u32) -> Option<&WeaponScriptSounds> {
         self.content.data.weapon_script_sounds.get(weapon as usize)
+    }
+
+    pub(crate) fn weapon_ai_accuracy(&self, weapon: u32) -> Option<weapon_iw4::WeaponAiAccuracy> {
+        self.content
+            .data
+            .weapon_ai_accuracy
+            .get(weapon as usize)
+            .copied()
+            .filter(|row| !row.is_empty())
     }
 
     pub(crate) fn weapon_is_melee_only(&self, weapon: u32) -> bool {

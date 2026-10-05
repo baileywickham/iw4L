@@ -5,8 +5,8 @@ use super::{
 };
 use crate::asset_type::AssetType;
 use crate::zone::{
-    Ptr, Result, WeaponGeometry, WeaponIdleCapture, WeaponKickCapture, WeaponMovementOfsCapture,
-    WeaponSwayCapture, XFILE_BLOCK_VIRTUAL, ZonePtr, ZoneStream,
+    Ptr, Result, WeaponAiAccuracyCapture, WeaponGeometry, WeaponIdleCapture, WeaponKickCapture,
+    WeaponMovementOfsCapture, WeaponSwayCapture, XFILE_BLOCK_VIRTUAL, ZonePtr, ZoneStream,
 };
 
 fn authored_material_slot(
@@ -119,8 +119,25 @@ pub(super) fn load_weapon(s: &mut ZoneStream<'_>, links: &mut dyn AssetLinkSink)
         }
     };
 
-    s.plain_array(p, s.layout(104, 136), 4, 8, ai_vs_ai_knots)?;
-    s.plain_array(p, s.layout(108, 144), 4, 8, ai_vs_player_knots)?;
+    let ai_vs_ai_graph = s.plain_array(p, s.layout(104, 136), 4, 8, ai_vs_ai_knots)?;
+    let ai_vs_player_graph = s.plain_array(p, s.layout(108, 144), 4, 8, ai_vs_player_knots)?;
+    let ai_accuracy = WeaponAiAccuracyCapture {
+        fight_dist: weap_def
+            .map(|body| s.f32_at(body, s.layout(1284, 1688)))
+            .transpose()?
+            .unwrap_or_default(),
+        max_dist: weap_def
+            .map(|body| s.f32_at(body, s.layout(1288, 1692)))
+            .transpose()?
+            .unwrap_or_default(),
+        ..capture_ai_accuracy_graphs(
+            s,
+            [
+                (ai_vs_ai_graph, ai_vs_ai_knots),
+                (ai_vs_player_graph, ai_vs_player_knots),
+            ],
+        )?
+    };
 
     let name = match s.ptr_at(p, 0)? {
         ZonePtr::Offset(q) => Some(s.resolve_alias(q)),
@@ -584,6 +601,7 @@ pub(super) fn load_weapon(s: &mut ZoneStream<'_>, links: &mut dyn AssetLinkSink)
         min_player_damage: body_facts.min_player_damage,
         max_damage_range: body_facts.max_damage_range,
         min_damage_range: body_facts.min_damage_range,
+        ai_accuracy,
         kick: body_facts.kick,
         sway: body_facts.sway,
     });
@@ -1173,6 +1191,25 @@ fn follow_snd_alias_custom(s: &mut ZoneStream<'_>, slot: Ptr) -> Result<Option<P
             })
         }
     }
+}
+
+/// The complete definition's two AI accuracy graphs (vec2 knots), as loaded.
+fn capture_ai_accuracy_graphs(
+    s: &ZoneStream<'_>,
+    graphs: [(Option<Ptr>, usize); 2],
+) -> Result<WeaponAiAccuracyCapture> {
+    let mut capture = WeaponAiAccuracyCapture::default();
+    for (slot, (array, count)) in graphs.into_iter().enumerate() {
+        let Some(array) = array else {
+            continue;
+        };
+        let count = count.min(capture.knots[slot].len());
+        for (i, knot) in capture.knots[slot][..count].iter_mut().enumerate() {
+            *knot = [s.f32_at(array, i * 8)?, s.f32_at(array, i * 8 + 4)?];
+        }
+        capture.knot_counts[slot] = count as u8;
+    }
+    Ok(capture)
 }
 
 fn read_f32_array<const N: usize>(

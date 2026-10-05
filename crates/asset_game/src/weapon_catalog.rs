@@ -278,6 +278,8 @@ pub struct WeaponBodyFacts {
 
     pub no_dual_wield: bool,
     pub dual_wield: bool,
+
+    pub ai_accuracy: weapon_iw4::WeaponAiAccuracy,
 }
 
 impl WeaponBodyFacts {
@@ -1724,6 +1726,7 @@ impl WeaponCatalog {
                 dual_wield_view_model_offset: geometry.dual_wield_view_model_offset,
                 dual_wield: false,
                 no_dual_wield: geometry.no_dual_wield,
+                ai_accuracy: iw4_ai_accuracy(&geometry.ai_accuracy),
             },
         });
     }
@@ -4620,8 +4623,27 @@ fn idle_from_capture(c: WeaponIdleCapture) -> WeaponIdleInputs {
     }
 }
 
+/// A captured IW4 weapon's AI accuracy graphs and engagement ranges.
+fn iw4_ai_accuracy(
+    capture: &fastfile_iw4::WeaponAiAccuracyCapture,
+) -> weapon_iw4::WeaponAiAccuracy {
+    let graph = |slot: usize| {
+        let count = usize::from(capture.knot_counts[slot]);
+        weapon_iw4::AiAccuracyGraph::from_knots(&capture.knots[slot][..count])
+    };
+    weapon_iw4::WeaponAiAccuracy {
+        fight_dist: capture.fight_dist,
+        max_dist: capture.max_dist,
+        ai_vs_ai: graph(0),
+        ai_vs_player: graph(1),
+    }
+}
+
 fn merge_body_facts(dst: &mut WeaponBodyFacts, src: WeaponBodyFacts) {
     dst.dual_wield |= src.dual_wield;
+    if dst.ai_accuracy.is_empty() {
+        dst.ai_accuracy = src.ai_accuracy;
+    }
     if dst.fire_time_ms == 0 {
         dst.fire_time_ms = src.fire_time_ms;
     }
@@ -7070,6 +7092,12 @@ impl WeaponRegistry {
 
     pub fn facts_of(&self, index: u32) -> Option<WeaponBodyFacts> {
         self.rows.get(index as usize).map(|row| row.facts)
+    }
+
+    /// Per weapon index, its AI accuracy graphs and ranges (empty when the
+    /// definition carries none).
+    pub fn ai_accuracy_table(&self) -> Vec<weapon_iw4::WeaponAiAccuracy> {
+        self.rows.iter().map(|row| row.facts.ai_accuracy).collect()
     }
 
     pub fn melee_weapon_of(&self, index: u32) -> u32 {

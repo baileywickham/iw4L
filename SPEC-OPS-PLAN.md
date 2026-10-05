@@ -337,3 +337,18 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   FX particle world traces (~1,000–1,600 per tick on favela/hidden, ~6 µs each) barely moved: the bounds reject and cached
   movement brushes are small next to walking every collision row per trace (a per-row index of brush models would be next).
   `actors` (perception/nav) and snowrace's `vehicles::advance` and spline scripts are the largest per-tick costs left.
+
+**AI accuracy from the weapon graphs (2026-10-04)**
+- IW4 weapons now load their AI accuracy data: the complete definition's `aiVsAiAccuracyGraphKnots` /
+  `aiVsPlayerAccuracyGraphKnots` (x86 +100/+104, x64 +132/+136; (distance/4000, accuracy) knots, last x = 1) and the
+  body's `fightDist`/`maxDist` (`WeaponAiAccuracy` in `weapon_iw4`, per weapon index in `SimContent`, not in the MP
+  content digest). E.g. `uzi`/`mp5` vs player 0.7 → 0.6 (200 u) → 0.4 (1000) → 0.2 (1800) → 0.1 (4000).
+- `shoot` follows `Actor_GetFinalAccuracy` (read from `iw4sp.exe`): `accuracy` × target `attackeraccuracy` × mod ×
+  graph(dist × `ai_accuracyDistScale` for players) and, vs a player, stance (prone 0.5, crouch 0.75), lateral speed
+  (1 − v/250, ≥ 0.3), `updateplayersightaccuracy` (0.5 + 0.5 × visible eye/75/50/25% points) and, unless
+  `noattackeraccuracymod`, `ai_accuracy_attackerCountDecrease`^(n−1) for n ≤ `ai_accuracy_attackerCountMax` (0.75, 4;
+  SO solo sets 0.6) actors that target and see the player. Weapons without graphs keep the old placeholder curve.
+- `IW4L_AI_ACCURACY_LOG=1` logs every actor shot (distance, each term, hit roll). Favela, god, standing, uzi, 500–750 u:
+  Regular hit roll 63% → 9% (predicted 8%), Veteran 69% → 13% (predicted 10%); the attacker-count term (~0.22 with
+  ~4 watchers) and the lower graph do most of it.
+- Regressions (Air): Pit 2:37.80, snowrace1 0:58.85, killspree_favela 1:17.95, killspree_invasion 1:40.80, mp_boneyard InGame.
