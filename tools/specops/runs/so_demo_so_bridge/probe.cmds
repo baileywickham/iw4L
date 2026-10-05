@@ -1,0 +1,1 @@
+wait world; spawn 0; god; wait 3s; showpos; look -105.9 9.6; wait 0.5s; screenshot demo_aim; hold +attack; wait 0.3s; release +attack; wait 1s; screenshot demo_hit; wait 6s; screenshot demo_after; give ammo; press +reload; wait 3s; look -143.0 7.1; wait 0.5s; hold +attack; wait 0.3s; release +attack; wait 8s; screenshot demo_after2; finish_run

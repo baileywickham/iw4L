@@ -1,0 +1,1 @@
+wait world; spawn 0; god; wait 2s; tp 4743 -7889 2400 0 0 &; wait 1s; tp 4807 -7937 2400 0 0 &; wait 20s; showpos; tp 5707 -8675 2440 0 0 &; wait 8s; tp 6000 -8200 2440 0 0 &; wait 20s; tp 8138 -10670 2420 0 0 &; wait 8s; tp 8000 -10300 2420 0 0 &; wait 30s; tp 5707 -8675 2440 0 0 &; wait 8s; tp 6000 -8200 2440 0 0 &; wait 30s; finish_run

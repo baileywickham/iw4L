@@ -1,0 +1,1 @@
+wait world; spawn 0; god; showpos; wait 2s; tp 10496 32144 10; wait 5s; showpos; screenshot cross0; wait 3s; finish_run

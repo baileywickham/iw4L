@@ -1,0 +1,32 @@
+# so_assault_oilrig: breach the deck-1 upper room (slow-mo), clear it with IW4L_AUTOAIM=1 (hostages are neutral and
+# not aimed at), deck 1 -> stairs -> deck 2 (rappellers, heli) -> stairs -> top deck, breach the barracks, clear it.
+wait world; spawn 0; god; wait 2s; screenshot start
+tp 960 272 -1056 180 0; wait 1.5s; screenshot pre_breach1
+press +activate; wait 0.3s; press +activate; wait 3s; screenshot breach1
+hold +attack; wait 3s; release +attack; wait 0.3s; screenshot slowmo1
+hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp 700 272 -1056 180 0; wait 1s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 6s; screenshot room1_cleared
+tp 300 0 -1056 180 0; wait 2s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp -92 156 -1056 135 0; wait 2s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp -480 628 -1050 90 0; wait 2s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s; screenshot deck1_mid
+tp -472 840 -885 90 0; wait 2s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp -688 1108 -675 90 0; wait 2s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp -349 1496 -670 0 0; wait 3s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s; screenshot rappel
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s; screenshot heli
+tp 600 1500 -670 0 0; wait 2s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+tp 1615 1500 -670 0 0; wait 2s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s; screenshot deck2_corner
+tp 1422 132 -670 270 0; wait 2s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+tp 772 -224 -500 180 0; wait 3s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s; screenshot top_stairs
+tp 356 104 -285 90 0; wait 3s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s; screenshot smoke
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+tp 16 312 -285 90 0; wait 3s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 3s
+tp 216 950 -285 90 0; wait 1.5s; screenshot pre_breach2
+press +activate; wait 0.3s; press +activate; wait 3s; screenshot breach2
+hold +attack; wait 3s; release +attack; wait 0.3s; screenshot slowmo2
+hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp 216 1100 -285 90 0; wait 1s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp 300 1336 -285 90 0; wait 1s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s; showpos; screenshot barracks
+wait 8s; screenshot eog; wait 2s; finish_run

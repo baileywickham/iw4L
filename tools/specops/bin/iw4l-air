@@ -1,0 +1,28 @@
+#!/bin/bash
+# Run an IW4L live test on the Air (macnode) instead of this Mac.
+# usage: iw4l-air <worktree-dir> [--env K=V ...] -- <iw4l args...>
+# Syncs the worktree source, builds (play profile), waits for any other game on the Air,
+# runs the game, then copies the latest log and screenshots back into <worktree>/iw4l-artifacts/air/.
+set -euo pipefail
+SSH="ssh -i $HOME/.ssh/macnode -o BatchMode=yes baileywickham@192.168.0.50"
+WT=$(cd "$1" && pwd); shift
+ENVS=()
+while [ "${1:-}" != "--" ] && [ $# -gt 0 ]; do
+  [ "$1" = "--env" ] && { ENVS+=("$2"); shift 2; continue; }
+  shift
+done
+shift || true
+NAME=$(basename "$WT")
+REMOTE="runs/$NAME"
+rsync -a --delete -e "ssh -i $HOME/.ssh/macnode" --exclude target --exclude iw4l-artifacts --exclude .claude --exclude context "$WT/" "baileywickham@192.168.0.50:$REMOTE/"
+ARGS=$(printf '%q ' "$@")
+ENVSTR=""; [ ${#ENVS[@]} -gt 0 ] && ENVSTR=$(printf '%q ' "${ENVS[@]}")
+$SSH "cd ~/$REMOTE && export PATH=\$HOME/.cargo/bin:/opt/homebrew/bin:\$PATH && \
+  (cargo build --profile play -p launcher 2>&1 | grep -E '^error|Finished' -A8 | head -40) && \
+  printf 'IW4L_GAMES=%s/Games\nIW4L_WINDOW_ON_TOP=1\n' \$HOME > .env && set -a && . ./.env && set +a && \
+  L=\$HOME/runs/.game.lock; until mkdir \$L 2>/dev/null; do [ -n \"\$(find \$L -maxdepth 0 -mmin +45 2>/dev/null)\" ] && rmdir \$L; sleep 5; done; trap 'rmdir \$L 2>/dev/null' EXIT; while pgrep -x iw4l >/dev/null; do sleep 5; done && \
+  rm -rf iw4l-artifacts/screenshots && env $ENVSTR IW4L_AIR=1 timeout ${IW4L_AIR_TIMEOUT:-300} ./target/play/iw4l $ARGS > /tmp/iw4l-$NAME.out 2>&1; echo exit=\$?"
+mkdir -p "$WT/iw4l-artifacts/air"
+rsync -aL -e "ssh -i $HOME/.ssh/macnode" "baileywickham@192.168.0.50:$REMOTE/iw4l-artifacts/logs/latest.log" "$WT/iw4l-artifacts/air/latest.log" 2>/dev/null || true
+rsync -a -e "ssh -i $HOME/.ssh/macnode" "baileywickham@192.168.0.50:$REMOTE/iw4l-artifacts/screenshots/" "$WT/iw4l-artifacts/air/screenshots/" 2>/dev/null || true
+echo "log: $WT/iw4l-artifacts/air/latest.log"; ls "$WT/iw4l-artifacts/air/screenshots" 2>/dev/null | sed "s|^|screenshot: $WT/iw4l-artifacts/air/screenshots/|"

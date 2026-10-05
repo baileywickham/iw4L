@@ -1,0 +1,73 @@
+# so_defense_invasion: all five waves (Regular, god). Picks up the RPG beside the start (map pickup, +activate), then
+# `autoaim on fire vehicles hunt 5`: the gun for hunters, `weapnext` to the RPG for the BTRs and the mi28;
+# `give ammo` every 15 s refills the RPG. Completes in ~10 min (Air 10:08.75): air.sh so_defense_invasion run.cmds di 1200
+wait world; spawn 0; god; wait 3s; tp -1614 -600 2316 270 40; wait 1s; press +activate 1.5s; wait 2s; screenshot di_rpg; tp -1262 -1612 2343 270 0; wait 1s
+hold +speed_throw; autoaim on fire vehicles hunt 5; enemies
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+screenshot di20; enemies
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+screenshot di40; enemies
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+screenshot di60; enemies
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 15s; give ammo
+wait 3s; finish_run

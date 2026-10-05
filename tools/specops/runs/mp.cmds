@@ -1,0 +1,1 @@
+wait world; spawn 0; wait 5s; screenshot mp; finish_run

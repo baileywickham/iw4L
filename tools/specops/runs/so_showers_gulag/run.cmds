@@ -1,0 +1,15 @@
+# so_showers_gulag: breach the showers (slow-mo), clear them with IW4L_AUTOAIM=1, walk the bathroom, exit trigger.
+wait world; spawn 0; god; wait 2s
+tp -1480 -1960 576 124 0; wait 1s; screenshot pre_breach
+press +activate; wait 0.3s; press +activate; wait 3s; screenshot breach
+hold +attack; wait 4s; release +attack; wait 0.3s; screenshot slowmo
+hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 3s
+tp -1300 -1600 540 60 0; wait 1s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 2s
+tp -1100 -1300 540 60 0; wait 1s; hold +attack; wait 3s; release +attack; give ammo; press +reload; wait 2s
+tp -929 -1064 540 60 0; wait 1s; screenshot wave2; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 2s
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 2s
+tp -563 -527 540 60 0; wait 1s; hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 2s
+hold +attack; wait 4s; release +attack; give ammo; press +reload; wait 2s
+tp -74 205 540 60 0; wait 1s; showpos; screenshot hole
+tp -39 276 300 60 0; wait 1s; showpos; screenshot exit
+wait 8s; screenshot eog; wait 2s; finish_run

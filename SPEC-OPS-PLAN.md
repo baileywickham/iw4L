@@ -1,5 +1,7 @@
 # IW4L Spec Ops plan
 
+> **Resuming?** Start with [`docs/spec-ops/RESUME.md`](docs/spec-ops/RESUME.md) — current state, test workflow, run scripts, dev flags, open items.
+
 Goal: add MW2's **Spec Ops** to [IW4L](https://github.com/vladtrc/iw4L), the from-scratch Rust rewrite of MW2, *properly*: the original `so_*` missions running their own GSC scripts on a real single-player actor (AI) system. Not the shortcut of using IW4L's MP bots as enemies on MP maps with hand-written missions.
 
 Status: implementation started 2026-10-02 on branch `spec-ops` of the fork `baileywickham/iw4L` (upstream `vladtrc/iw4L` is the `upstream` remote; no plan to merge back). Builds and runs on macOS arm64 (M4 Pro, Metal).
