@@ -245,6 +245,12 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
             "actor: animscripts/init::main waited (thread {serial})"
         );
     }
+    // Spawned after this tick's think, the actor would reach the snapshot with
+    // an empty tree (one tick in the bind pose); its state's animscript starts now.
+    if world.resource::<Runtime>().live(&object) {
+        let now = now_ms(world);
+        super::actor_nav::select_animscript(world, actor, object, now);
+    }
     if notify {
         raise(
             world,

@@ -42,8 +42,9 @@ const MAX_ROOT_STEP: f32 = 40.0;
 /// Ticks `move` may run with a path and no root delta before the kinematic
 /// speed takes over.
 const NO_DELTA_TICKS: u16 = 4;
-/// Ticks the hull may stay blocked short of its step before it slides through.
-const BLOCKED_TICKS: u16 = 10;
+/// Ticks the hull may stay blocked short of its step before it slides through
+/// (each one plays the run anim in place; 10 read as half a second of treadmill).
+const BLOCKED_TICKS: u16 = 4;
 /// A traverse starts this close to the link's begin node.
 const TRAVERSE_BEGIN_DIST: f32 = 16.0;
 
@@ -421,6 +422,11 @@ fn follow_path(
     at: [f32; 3],
 ) -> ([f32; 3], Option<(u16, u16)>) {
     let Some(mut path) = with_actor(world, id, |a| a.path.take()).flatten() else {
+        if let Some((delta, mode)) =
+            actor(world, id).map(|a| (a.anim_delta.clone(), a.anim_mode.clone()))
+        {
+            super::actor_motion::record_sample(world, id, object, at, at, &delta, &mode, false);
+        }
         return (at, None);
     };
     let (walk_dist, rate, delta, in_move, kinematic_link, anim_mode) = {
@@ -695,7 +701,7 @@ const STICKY_ANIMSCRIPTS: [&str; 6] = [
 
 /// The animscript the actor's state wants: `move` while it has a path, with an
 /// enemy its claimed cover node's script or `combat`, else `stop`.
-fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
+pub(crate) fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     let Some((current, started, moving, enemy)) = actor(world, id).map(|a| {
         (
             a.animscript.clone(),
@@ -819,11 +825,22 @@ pub(crate) fn switch_animscript(
         a.animscript_started_ms = now;
     });
     let module = super::actors::animscript_module(world, id, &wanted);
-    let serial = run_script(
-        world,
-        &format!("animscripts/{module}::main"),
-        Value::Object(object),
-    );
+    let main = format!("animscripts/{module}::main");
+    if !super::actors::has_function(world, &main) {
+        static MISSING: std::sync::Mutex<std::collections::BTreeSet<String>> =
+            std::sync::Mutex::new(std::collections::BTreeSet::new());
+        if MISSING
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(main.clone())
+        {
+            diag::warn!(
+                Sim,
+                "actor: {main} is not loaded; actors in that state run no animscript"
+            );
+        }
+    }
+    let serial = run_script(world, &main, Value::Object(object));
     with_actor(world, id, |a| {
         a.animscript = Some((wanted, serial.unwrap_or(0)))
     });
@@ -964,6 +981,12 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
     } else {
         follow_path(world, id, object, at)
     };
+    let moved = if moved == at {
+        settle(world, id, object, at)
+    } else {
+        with_actor(world, id, |a| a.motion.settled = false);
+        moved
+    };
     if moved != at {
         world
             .resource_mut::<super::mechanics::Mechanics>()
@@ -1000,6 +1023,50 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             );
         }
     }
+}
+
+/// An actor that did not move this tick still stands on the floor: spawners
+/// and cover nodes sit up to ~16 u above it, and only a moving hull met the
+/// ground. Gravity applies until the hull lands, then it stays settled until
+/// it moves again (no trace per idle tick).
+fn settle(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f32; 3] {
+    let Some((settled, mode)) = actor(world, id).map(|a| (a.motion.settled, a.anim_mode.clone()))
+    else {
+        return at;
+    };
+    if settled || !matches!(&*mode, "normal" | "none" | "zonly_physics" | "gravity") {
+        return at;
+    }
+    let Some(pos) =
+        super::actor_motion::physics_move(world, id, object, at, [0.0; 3], Physics::Ground)
+    else {
+        // Stuck in solid: left where it stands, not retried every tick.
+        with_actor(world, id, |a| a.motion.settled = true);
+        return at;
+    };
+    let (landed, first) = actor(world, id).map_or((false, false), |a| {
+        (
+            a.motion.air_ms == 0 && a.motion.fall == 0.0,
+            a.motion.air_ms == crate::MATCH_TICK_MS as i64,
+        )
+    });
+    if landed && length(sub(pos, at)) < 0.01 {
+        with_actor(world, id, |a| a.motion.settled = true);
+        return at;
+    }
+    if first {
+        diag::info!(
+            Sim,
+            "actor: entity {} idle above the floor at z={:.1}; drops to it",
+            world
+                .resource::<Runtime>()
+                .entities
+                .get(&object)
+                .map_or(-1, |e| e.number),
+            at[2]
+        );
+    }
+    pos
 }
 
 /// `cover_arrival` is playing: its root motion carries the actor into the node.

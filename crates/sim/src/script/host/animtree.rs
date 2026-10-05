@@ -163,6 +163,9 @@ pub(crate) struct ScriptAnimTree {
     pub name: Arc<str>,
     pub nodes: Vec<ScriptAnimNode>,
     pub definition: Arc<XAnimTreeDefinition>,
+    /// Per node: some clip at or under it carries root motion (delta
+    /// translation or yaw). Facial and other part-only subtrees do not.
+    pub delta: Vec<bool>,
     index: HashMap<String, u16>,
     leaves: usize,
     missing: usize,
@@ -292,6 +295,23 @@ impl ScriptAnimTree {
             })
             .collect();
         let definition = XAnimTreeDefinition::new(definition).map_err(|e| e.to_string())?;
+        let mut delta: Vec<bool> = definition
+            .nodes()
+            .iter()
+            .map(|node| match &node.kind {
+                XAnimNodeKind::Leaf { clip, .. } => {
+                    clip.has_delta() || clip.abs_delta_yaw(1.0) != 0.0
+                }
+                _ => false,
+            })
+            .collect();
+        for node in (1..nodes.len()).rev() {
+            if let Some(parent) = nodes[node].parent
+                && delta[node]
+            {
+                delta[parent as usize] = true;
+            }
+        }
         if std::env::var("IW4L_ANIMTREE_MISSING").is_ok_and(|v| v == "1") {
             for chunk in missing_names.chunks(64) {
                 diag::info!(Sim, "gsc: animtree {name} missing: {}", chunk.join(" "));
@@ -301,6 +321,7 @@ impl ScriptAnimTree {
             name: name.into(),
             nodes,
             definition: Arc::new(definition),
+            delta,
             index,
             leaves,
             missing,

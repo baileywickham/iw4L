@@ -180,6 +180,13 @@ pub(crate) struct Motion {
     pub sample_dist: f32,
     pub sample_ticks: u16,
     pub kinematic_ticks: u16,
+    /// Motion-log ticks of the move animscript with a translating anim and
+    /// the actor not following it.
+    pub in_place_ticks: u16,
+    /// Idle and on the floor: no ground trace until the actor moves.
+    pub settled: bool,
+    /// Ticks the published tree has had no weighted leaf (`IW4L_TPOSE_LOG`).
+    pub tposed_ticks: u16,
     /// A negotiation link with no traverse animscript, walked kinematically.
     pub kinematic_link: Option<u16>,
 }

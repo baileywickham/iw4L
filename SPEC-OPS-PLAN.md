@@ -376,3 +376,29 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   timed out (before the deferral). Screens `context/runs/logs/forest_a_shots/knockdown_05.png` (rig view),
   `knockdown_06.png` (on the back, hint fading).
 - Open: the dog and viewhands are not visible in the knock-down screenshots; the hint reads `Unbound(+melee)`.
+
+**Enemy visuals: T-pose, jitter, running in place (2026-10-05)** — from Bailey's hand-played boneyard
+- T-pose in cover: `animscripts/cover_{left,right,crouch,stand,prone,arrival}` were not startup roots and nothing in
+  script references them, so an actor at a cover node "ran" an animscript that did not exist (`run_script` returned
+  None silently, retried every 500 ms) after `cover_arrival` had cleared `%root`: 7 of 15 favela enemies stood in
+  the bind pose for 8–28 s at a time. Now roots (`iw4sp_startup.rs`); a state whose animscript is not loaded logs once.
+- T-pose for one tick on spawn: spawns happen after the tick's actor think and the first setanim blends from 0.
+  Spawn starts the state's animscript; a goal weight set under an unweighted parent (or on an empty tree's root)
+  applies at once (what `advance_goal_weight` does on the next update anyway).
+- Running slowly / in place: root motion was normalized over every weighted child, so the face anims of
+  `scripted_talking` (`generic_talker_axis`, weight 1 next to `body`) halved it — juggernaut `Juggernaut_runF` at
+  5–31 u/s while talking. Normalization now only counts subtrees that carry a delta (`ScriptAnimTree::delta`); the
+  cover-arrival "remaining root" ignores them too. The blocked-hull fallback slides after 4 ticks (was 10).
+- Idle actors floated at their spawner height (~16 u): an actor that did not move this tick settles under gravity
+  until it lands (`Motion::settled`, no trace while settled).
+- Jitter: snapshots now carry each node's rate and goal blend; the client advances script anim trees from the
+  snapshot tick to the render time (0–49 ms ahead on the Air, capped at 100) before posing, re-synced by each
+  snapshot (`DObjSemanticState::advanced`). Positions already extrapolate (`set_script_mover_pose` TR_LINEAR).
+  Cost on favela, same build: 53.6 → 50.6 fps (`IW4L_ANIM_EXTRAPOLATE=0` vs on).
+- Logs: `IW4L_TPOSE_LOG`, `IW4L_ANIM_TRACE=<entnum>`, `IW4L_ANIM_LERP_LOG`; the motion log counts `in_place_ticks`
+  (move script, translating anim, under a quarter of it covered) and flags `MOVE-IN-PLACE`.
+- Air regression: favela 1:06.55, Pit 2:28.25, rooftop 2:48.50, forest 2:11.30 succeed, mp_boneyard InGame. Zero
+  T-pose stretches and zero MOVE-IN-PLACE on favela/Pit/rooftop/boneyard.
+- Open (forest): two patrol guys T-pose ~17 s in `animscripts/animmode::main` (`animcustom` runs with `self._anime`
+  undefined: the pre-existing `animmode:6` error chain); dogs 612/621 have only the additive `attack_look_*` layer
+  weighted for up to 19 s (dog stop/move base anim not set).

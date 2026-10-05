@@ -215,6 +215,32 @@ pub(super) fn thread_running(world: &mut World, serial: u64) -> bool {
         .any(|thread| thread.serial == serial)
 }
 
+/// Where a waiting thread is parked, innermost frame first (debug logs).
+pub(crate) fn thread_where(world: &mut World, serial: u64) -> String {
+    let Some(program) = world.resource::<Runtime>().program.clone() else {
+        return "-".into();
+    };
+    let Some(entity) = find_thread(world, serial) else {
+        return "not running".into();
+    };
+    let Some(thread) = world.get::<Thread>(entity) else {
+        return "not running".into();
+    };
+    thread
+        .frames
+        .iter()
+        .rev()
+        .take(4)
+        .filter_map(|f| {
+            let (at, _) = program.functions[f.function]
+                .code
+                .get(f.pc.saturating_sub(1))?;
+            Some(format!("{}:{} {}", at.module, at.line, at.function))
+        })
+        .collect::<Vec<_>>()
+        .join(" < ")
+}
+
 /// `run_now` that reports the thread when it is still waiting afterwards.
 pub(super) fn run_now_thread(
     world: &mut World,

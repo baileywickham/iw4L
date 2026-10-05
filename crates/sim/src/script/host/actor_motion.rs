@@ -338,9 +338,11 @@ pub(crate) fn anim_step(world: &mut World, id: ActorId, object: u64, at: [f32; 3
             .get(&id)
             .is_some_and(|a| a.motion.air_ms > 0 || a.motion.fall != 0.0);
         if flat_len(wish) < 0.01 && !airborne {
+            record_sample(world, id, object, at, at, &delta, &mode, false);
             return at;
         }
     } else if wish.iter().all(|c| c.abs() < 0.01) {
+        record_sample(world, id, object, at, at, &delta, &mode, false);
         return at;
     }
     let moved = physics_move(world, id, object, at, wish, physics)
@@ -349,7 +351,9 @@ pub(crate) fn anim_step(world: &mut World, id: ActorId, object: u64, at: [f32; 3
     moved
 }
 
-/// Per-actor speed log (`IW4L_ACTOR_MOTION_LOG=1`): once a second while moving.
+/// Per-actor speed log (`IW4L_ACTOR_MOTION_LOG=1`): once a second per actor;
+/// `MOVE-IN-PLACE` marks a second with 4+ ticks of the move animscript playing
+/// a translating anim while the actor covers under a quarter of its delta.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_sample(
     world: &mut World,
@@ -367,35 +371,44 @@ pub(crate) fn record_sample(
         return;
     }
     let step = flat_len(sub(moved, at));
+    let wants = flat_len(delta.trans);
     let sample = with_actor(world, id, |a| {
+        let in_move = a.animscript.as_ref().is_some_and(|(n, _)| &**n == "move");
+        // The move animscript plays a translating anim (20+ u/s) and the
+        // actor covers under a quarter of it: running in place.
+        let in_place = in_move && wants >= 1.0 && step < 0.25 * wants;
         a.motion.sample_dist += step;
         a.motion.sample_ticks += 1;
         a.motion.kinematic_ticks += u16::from(kinematic);
+        a.motion.in_place_ticks += u16::from(in_place);
         if a.motion.sample_ticks < 20 {
             return None;
         }
         let out = (
             a.motion.sample_dist / (f32::from(a.motion.sample_ticks) * TICK_SECONDS),
             a.motion.kinematic_ticks,
+            a.motion.in_place_ticks,
             a.move_mode.name(),
             a.animscript.as_ref().map(|(n, _)| n.clone()),
         );
         a.motion.sample_dist = 0.0;
         a.motion.sample_ticks = 0;
         a.motion.kinematic_ticks = 0;
+        a.motion.in_place_ticks = 0;
         Some(out)
     })
     .flatten();
-    if let Some((speed, kin, movemode, script)) = sample {
+    if let Some((speed, kin, in_place, movemode, script)) = sample {
         diag::info!(
             Sim,
-            "actor: motion entity {} speed={speed:.0} anim={} animmode={mode} movemode={movemode} script={} kinematic_ticks={kin} at {:.0} {:.0} {:.0}",
+            "actor: motion entity {} speed={speed:.0} anim={} animmode={mode} movemode={movemode} script={} kinematic_ticks={kin} in_place_ticks={in_place} at {:.0} {:.0} {:.0}{}",
             entity_number(world, object),
             delta.leaf.as_deref().unwrap_or("-"),
             script.as_deref().unwrap_or("-"),
             moved[0],
             moved[1],
-            moved[2]
+            moved[2],
+            if in_place >= 4 { " MOVE-IN-PLACE" } else { "" }
         );
     }
 }

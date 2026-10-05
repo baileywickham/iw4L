@@ -334,12 +334,45 @@ fn sync_spawned_scene_models(
     }
 }
 
+/// Snapshots carry script anim trees at the 20 Hz tick; drawn as they come the
+/// pose steps. Trees are advanced from the snapshot's tick to the render time
+/// (the clock movers are sampled on), at most two ticks; the next snapshot
+/// re-syncs them.
+const ANIM_EXTRAPOLATE_MAX_MS: i32 = 2 * sim::MATCH_TICK_MS as i32;
+
 fn apply_presented_script_model_dobjs(
     presented: Option<Res<net::PresentedSnapshot>>,
+    cg_clock: Option<Res<net::FrameClock>>,
+    xanims: Option<Res<assets::PreparedXAnims>>,
     mut owners: Query<(&mut WorldScriptModelInstance, &mut Visibility)>,
+    mut lerp_log: Local<AnimLerpLog>,
 ) {
     let Some(snapshot) = presented.as_ref().and_then(|value| value.snapshot()) else {
         return;
+    };
+    let snapshot_ms = sim::level_time_ms(snapshot.tick);
+    let render_ms = cg_clock
+        .as_ref()
+        .filter(|clock| clock.started())
+        .map(|clock| clock.time())
+        .unwrap_or(snapshot_ms);
+    let render_ms = presented
+        .as_ref()
+        .map_or(render_ms, |p| p.trajectory_time_ms(render_ms));
+    let ahead_ms = render_ms.saturating_sub(snapshot_ms);
+    static OFF: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var("IW4L_ANIM_EXTRAPOLATE").is_ok_and(|v| v == "0"));
+    let dt = if *OFF {
+        0.0
+    } else {
+        ahead_ms.clamp(0, ANIM_EXTRAPOLATE_MAX_MS) as f32 / 1000.0
+    };
+    lerp_log.sample(ahead_ms, snapshot.tick.0);
+    let resolve = |name: &str| {
+        xanims
+            .as_ref()?
+            .0
+            .clip(asset_core::AssetNamespace::Iw4, name)
     };
     let mut by_owner: std::collections::BTreeMap<
         sim::AuthorityModelOwner,
@@ -364,11 +397,60 @@ fn apply_presented_script_model_dobjs(
         if owner.current_model.0 != base.model {
             owner.current_model = asset_world::MapXModelAssetKey(base.model.clone());
         }
+        let advanced = state.advanced(dt, resolve);
+        let state = advanced.as_ref().unwrap_or(state);
         if owner.dobj_state != *state {
             owner.dobj_state = state.clone();
         }
 
         *visibility = Visibility::Inherited;
+    }
+}
+
+/// `IW4L_ANIM_LERP_LOG=1`: how far the render clock runs past the presented
+/// snapshot (min/max ms), once per 20 snapshots.
+#[derive(Default)]
+struct AnimLerpLog {
+    frames: u32,
+    min_ms: i32,
+    max_ms: i32,
+    last_tick: u32,
+    ticks: u32,
+}
+
+impl AnimLerpLog {
+    fn sample(&mut self, ahead_ms: i32, tick: u32) {
+        static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+            std::env::var("IW4L_ANIM_LERP_LOG").is_ok_and(|v| v == "1")
+        });
+        if !*ON {
+            return;
+        }
+        if self.frames == 0 {
+            self.min_ms = ahead_ms;
+            self.max_ms = ahead_ms;
+        }
+        self.frames += 1;
+        self.min_ms = self.min_ms.min(ahead_ms);
+        self.max_ms = self.max_ms.max(ahead_ms);
+        if tick != self.last_tick {
+            self.last_tick = tick;
+            self.ticks += 1;
+        }
+        if self.ticks >= 20 {
+            diag::info!(
+                World,
+                "anim lerp: {} frames over {} snapshots, render ahead of snapshot {}..{} ms",
+                self.frames,
+                self.ticks,
+                self.min_ms,
+                self.max_ms
+            );
+            *self = Self {
+                last_tick: tick,
+                ..Self::default()
+            };
+        }
     }
 }
 

@@ -58,6 +58,7 @@ Typical run: `IW4L_AIR_TIMEOUT=600 ~/bin/iw4l-air "$PWD" --env IW4L_GSC_STUB_NAT
 | `IW4L_VEH_AUTODRIVE=1` | snowmobile autopilot (`=2` logs decisions) |
 | `IW4L_TRIGGER_LOG=1` | named trigger bounds/hull centres (teleport targets) |
 | `IW4L_AI_ACCURACY_LOG=1`, `IW4L_ACTOR_MOTION_LOG=1`, `IW4L_ANIM_NOTE_LOG=1`, `IW4L_ANIMTREE_MISSING=1`, `IW4L_HELI_LOG=1` | subsystem logs |
+| `IW4L_TPOSE_LOG=1` (actors with no weighted body leaf + where their animscript is parked; census every 10 s), `IW4L_ANIM_TRACE=<entnum>` (that entity's setanim/clearanim), `IW4L_ANIM_LERP_LOG=1` (render time past the snapshot), `IW4L_ANIM_EXTRAPOLATE=0` (client anim extrapolation off, A/B) | actor visuals |
 | `IW4L_WINDOW_ON_TOP=1`, `IW4L_WINDOW_POS=x,y` | keep the window presented / place it |
 | `IW4L_PIPELINED_RENDERING=0`, `IW4L_FRAME_LATENCY` | render pipelining (on by default on macOS now) |
 | `IW4L_PROFILE_PATH` | isolate the profile (stars) file |

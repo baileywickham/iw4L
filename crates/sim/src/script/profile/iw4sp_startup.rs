@@ -1,6 +1,14 @@
-/// Animscripts the engine starts on actors itself (`animscripts/%s`).
-const ENGINE_ANIMSCRIPTS: [&str; 10] = [
+/// Animscripts the engine starts on actors itself (`animscripts/%s`), the
+/// cover states included: nothing in script references them, so without a
+/// root an actor at a cover node runs no animscript and stands in the bind pose.
+const ENGINE_ANIMSCRIPTS: [&str; 16] = [
     "animscripts/init",
+    "animscripts/cover_arrival",
+    "animscripts/cover_crouch",
+    "animscripts/cover_left",
+    "animscripts/cover_prone",
+    "animscripts/cover_right",
+    "animscripts/cover_stand",
     "animscripts/stop",
     "animscripts/combat",
     "animscripts/move",

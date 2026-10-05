@@ -74,7 +74,28 @@ impl EntityAnim {
         let mut state = self.state(node);
         state.goal_weight = weight;
         state.goal_time = time;
-        if time <= 0.0 {
+        // Under a parent with no weight there is nothing to blend from: the
+        // next update jumps to the goal (`advance_goal_weight`); so does a
+        // tree with nothing weighted at all (its root), so the pose a script
+        // sets reaches this tick's snapshot instead of one tick of bind pose.
+        // A child blending in with no weighted sibling poses the same at any
+        // weight above zero (blends normalize), so it does not start from zero.
+        let nothing_to_blend = match self.tree.nodes[node as usize].parent {
+            Some(parent) => {
+                let defs = self.tree.definition.nodes();
+                let additive = matches!(defs[node as usize].kind, XAnimNodeKind::Additive)
+                    || matches!(defs[parent as usize].kind, XAnimNodeKind::Additive);
+                self.state(parent).weight == 0.0
+                    || !additive
+                        && weight > state.weight
+                        && !self.tree.nodes[parent as usize]
+                            .children
+                            .clone()
+                            .any(|sibling| sibling != node && self.state(sibling).weight > 0.0)
+            }
+            None => state.weight == 0.0,
+        };
+        if time <= 0.0 || nothing_to_blend {
             state.weight = weight;
         }
         self.put(node, state)
@@ -186,7 +207,7 @@ impl EntityAnim {
             let Some(flag) = self.flags[node].clone() else {
                 continue;
             };
-            let Some(leaf) = self.dominant_leaf(node as u16) else {
+            let Some(leaf) = self.dominant_leaf(node as u16, false) else {
                 continue;
             };
             let Some(clip) = self.tree.clip(leaf) else {
@@ -201,9 +222,9 @@ impl EntityAnim {
     }
 
     /// The part of the tree that reaches the pose: weighted nodes under
-    /// weighted ancestors that lead to a clip. State is cut to time and
-    /// weight (the rest stays default and costs no wire bytes), so an
-    /// unchanged pose compares equal from tick to tick.
+    /// weighted ancestors that lead to a clip. State is cut to time, weight,
+    /// goal blend and rate (cycle counts and old times stay default and cost
+    /// no wire bytes), so an unchanged pose compares equal from tick to tick.
     fn active_pose(&self) -> Result<Option<(Vec<XAnimSemanticNode>, XAnimTreeRuntime)>, String> {
         // Idle nodes (not in `live`) have no weight, so they are never on.
         let states = self.runtime.states();
@@ -246,9 +267,14 @@ impl EntityAnim {
                     *parts,
                 ),
             };
+            // Rate and the goal blend let clients advance the pose between
+            // snapshots (`update_inherited_rate`, as the authority does).
             let state = XAnimNodeState {
                 time: states[node].time,
                 weight: states[node].weight,
+                goal_weight: states[node].goal_weight,
+                goal_time: states[node].goal_time,
+                rate: states[node].rate,
                 ..XAnimNodeState::default()
             };
             nodes.push(XAnimSemanticNode {
@@ -276,10 +302,65 @@ impl EntityAnim {
         Ok(Some((nodes, runtime)))
     }
 
+    /// Some leaf with a clip reaches the pose (weighted under weighted
+    /// ancestors) under a top-level branch that carries root motion (`body`),
+    /// not only the face anims of `scripted_talking`.
+    fn body_posed(&self) -> bool {
+        let states = self.runtime.states();
+        self.live.iter().any(|&node| {
+            if self.tree.clip(node).is_none() {
+                return false;
+            }
+            let (mut at, mut top) = (node, node);
+            loop {
+                if states[at as usize].weight <= 0.0 {
+                    return false;
+                }
+                match self.tree.nodes[at as usize].parent {
+                    Some(parent) => {
+                        top = at;
+                        at = parent;
+                    }
+                    None => break,
+                }
+            }
+            self.tree.delta[top as usize]
+        })
+    }
+
+    /// Weighted nodes for the T-pose log: deepest first, `?` marks a leaf
+    /// whose xanim is not loaded (it poses nothing).
+    fn weighted_names(&self) -> String {
+        let states = self.runtime.states();
+        let mut names: Vec<String> = self
+            .live
+            .iter()
+            .rev()
+            .filter(|node| states[**node as usize].weight > 0.0)
+            .filter(|node| self.tree.nodes[**node as usize].children.is_empty())
+            .take(6)
+            .map(|node| {
+                let missing = self.tree.clip(*node).is_none();
+                format!(
+                    "{}{}={:.2}",
+                    self.tree.nodes[*node as usize].name,
+                    if missing { "?" } else { "" },
+                    states[*node as usize].weight
+                )
+            })
+            .collect();
+        if names.is_empty() {
+            names.push("none".into());
+        }
+        names.join(" ")
+    }
+
     /// Root motion this step (`XAnimCalcDelta`): every weighted leaf's root
     /// translation and yaw between its old and new time, in the model frame at
-    /// the start of the step, blended by weights normalized at each blend node.
-    /// Additive layers carry no root motion.
+    /// the start of the step, blended by weights normalized at each blend node
+    /// over the children that carry root motion. Additive layers and subtrees
+    /// without a delta (the `scripted_talking` face anims next to `body`) do
+    /// not dilute it: a soldier who talks keeps his run speed.
     pub(crate) fn motion_delta(&self) -> crate::actor::AnimDelta {
         let states = self.runtime.states();
         let defs = self.tree.definition.nodes();
@@ -301,14 +382,16 @@ impl EntityAnim {
                 }
                 XAnimNodeKind::Blend => {
                     let children = self.tree.nodes[node as usize].children.clone();
+                    let moving = |child: &u16| self.tree.delta[*child as usize];
                     let sum: f32 = children
                         .clone()
+                        .filter(moving)
                         .map(|child| states[child as usize].weight.max(0.0))
                         .sum();
                     if sum <= 0.0 {
                         continue;
                     }
-                    for child in children.rev() {
+                    for child in children.rev().filter(moving) {
                         let w = states[child as usize].weight;
                         if w > 0.0 {
                             stack.push((child, weight * w / sum));
@@ -317,14 +400,29 @@ impl EntityAnim {
                 }
             }
         }
-        out.leaf = best.map(|(_, leaf)| Arc::clone(&self.tree.nodes[leaf as usize].name));
+        // Idles carry no delta; the log still names the heaviest body leaf.
+        let best = best.map(|(_, leaf)| leaf).or_else(|| {
+            self.tree.nodes[0]
+                .children
+                .clone()
+                .filter(|child| {
+                    self.tree.delta[*child as usize] && states[*child as usize].weight > 0.0
+                })
+                .max_by(|a, b| {
+                    states[*a as usize]
+                        .weight
+                        .total_cmp(&states[*b as usize].weight)
+                })
+                .and_then(|child| self.dominant_leaf(child, false))
+        });
+        out.leaf = best.map(|leaf| Arc::clone(&self.tree.nodes[leaf as usize].name));
         out
     }
 
     /// The dominant anim's root translation still to play (model frame at its
     /// current time) and the seconds that takes at its rate.
     pub(crate) fn remaining_root(&self) -> Option<([f32; 3], f32)> {
-        let leaf = self.dominant_leaf(0)?;
+        let leaf = self.dominant_leaf(0, true)?;
         let clip = self.tree.clip(leaf)?;
         let state = self.state(leaf);
         if clip.looping || state.rate <= 0.0 {
@@ -337,7 +435,9 @@ impl EntityAnim {
         Some((trans, (1.0 - state.time) * clip.duration() / state.rate))
     }
 
-    fn dominant_leaf(&self, node: u16) -> Option<u16> {
+    /// The heaviest weighted leaf under `node`; with `moving`, only among
+    /// subtrees that carry root motion.
+    fn dominant_leaf(&self, node: u16, moving: bool) -> Option<u16> {
         let states = self.runtime.states();
         let mut best: Option<(f32, u16)> = None;
         let mut stack = vec![(node, 1.0f32)];
@@ -347,7 +447,7 @@ impl EntityAnim {
             } else {
                 weight * states[at as usize].weight
             };
-            if weight <= 0.0 && at != node {
+            if (weight <= 0.0 && at != node) || (moving && !self.tree.delta[at as usize]) {
                 continue;
             }
             let children = self.tree.nodes[at as usize].children.clone();
@@ -540,6 +640,9 @@ fn publish_anims_inner(world: &mut World) {
         };
         poses.push((presence, pose));
     }
+    if *TPOSE_LOG {
+        tpose_census(world);
+    }
     let mut frame = FrameWorld::from_world(world);
     for (presence, pose) in poses {
         if let Some(dobj) = frame
@@ -548,6 +651,94 @@ fn publish_anims_inner(world: &mut World) {
         {
             dobj.set_script_tree(pose);
         }
+    }
+}
+
+static TPOSE_LOG: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("IW4L_TPOSE_LOG").is_ok_and(|v| v == "1"));
+
+/// T-pose log (`IW4L_TPOSE_LOG=1`): an actor whose published tree has no
+/// weighted leaf draws in the bind pose. Each such stretch is logged when it
+/// starts and ends, with a census of live actors every 10 s.
+fn tpose_census(world: &mut World) {
+    let now = super::players::now_ms(world);
+    let mut rows = Vec::new();
+    let (mut corpses, mut tposed_corpses) = (0, 0);
+    {
+        let runtime = world.resource::<Runtime>();
+        let mechanics = world.resource::<Mechanics>();
+        let pool = world.resource::<crate::actor::ActorPool>();
+        let why = |object: &u64| match mechanics.anims.get(object) {
+            None => Some("no animtree"),
+            Some(anim) => (!anim.body_posed()).then_some("no weighted body leaf"),
+        };
+        for object in pool.corpses.iter().filter(|o| runtime.live(o)) {
+            corpses += 1;
+            tposed_corpses += usize::from(why(object).is_some());
+        }
+        for (id, actor) in &pool.actors {
+            let Some(entity) = runtime.entities.get(&actor.object) else {
+                continue;
+            };
+            let why = why(&actor.object).map(|why| {
+                let weighted = mechanics
+                    .anims
+                    .get(&actor.object)
+                    .map(EntityAnim::weighted_names)
+                    .unwrap_or_default();
+                format!("{why}; weighted: {weighted}")
+            });
+            rows.push((
+                *id,
+                entity.number,
+                why,
+                actor.animscript.clone(),
+                actor.dying.is_some(),
+            ));
+        }
+    }
+    rows.sort_by_key(|row| row.1);
+    let mut tposed = 0;
+    for (id, number, why, script, dying) in &rows {
+        tposed += usize::from(why.is_some());
+        let was = world
+            .resource_mut::<crate::actor::ActorPool>()
+            .actors
+            .get_mut(id)
+            .map(|a| {
+                let was = a.motion.tposed_ticks;
+                a.motion.tposed_ticks = if why.is_some() {
+                    was.saturating_add(1)
+                } else {
+                    0
+                };
+                was
+            })
+            .unwrap_or(0);
+        let (script, serial) = script
+            .as_ref()
+            .map_or(("-", 0), |(name, serial)| (&**name, *serial));
+        match why {
+            Some(why) if was == 0 => {
+                let parked = crate::script::runtime::thread_where(world, serial);
+                diag::warn!(
+                    Sim,
+                    "actor: tpose entity {number} ({why}) script={script} dying={dying} at {now} ms; thread at {parked}"
+                )
+            }
+            None if was > 0 => diag::info!(
+                Sim,
+                "actor: tpose entity {number} ended after {was} ticks script={script}"
+            ),
+            _ => {}
+        }
+    }
+    if now % 10_000 == 0 {
+        diag::info!(
+            Sim,
+            "actor: tpose census actors={} tposed={tposed} corpses={corpses} tposed_corpses={tposed_corpses} at {now} ms",
+            rows.len()
+        );
     }
 }
 
@@ -570,6 +761,30 @@ fn with_anim<T>(
         .get_mut(&id)
         .ok_or("entity has no animtree; call useanimtree first")?;
     change(anim)
+}
+
+/// `IW4L_ANIM_TRACE=<entity number>`: that entity's setanim/clearanim calls.
+fn trace_op(world: &World, receiver: &Value, what: impl FnOnce() -> String) {
+    static ENT: std::sync::LazyLock<Option<i32>> = std::sync::LazyLock::new(|| {
+        std::env::var("IW4L_ANIM_TRACE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    });
+    let Some(wanted) = *ENT else {
+        return;
+    };
+    let runtime = world.resource::<Runtime>();
+    if runtime
+        .entity(receiver)
+        .is_some_and(|(_, e)| e.number == wanted)
+    {
+        diag::info!(
+            Sim,
+            "anim trace: entity {wanted} at {} ms {}",
+            super::players::now_ms(world),
+            what()
+        );
+    }
 }
 
 fn node(anim: &EntityAnim, args: &[Value], index: usize) -> Result<u16, String> {
@@ -618,6 +833,14 @@ fn set_anim(
         "blend time",
     )?;
     let rate = finite(optional(args, at + 2, float)?.unwrap_or(1.0), "rate")?;
+    trace_op(world, receiver, || {
+        let name = |i: usize| anim_value(args, i).map_or("?".into(), |(_, n)| n);
+        format!(
+            "set mode={mode:#x} %{} root={} weight={weight} time={time} rate={rate}",
+            name(anim_at),
+            root_at.map_or("-".into(), name)
+        )
+    });
     with_anim(world, receiver, |anim| {
         let target = node(anim, args, anim_at)?;
         let root = root_at.map(|i| node(anim, args, i)).transpose()?;
@@ -840,6 +1063,10 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
 
     registry.register(Method, "clearanim", |world, receiver, args| {
         let time = finite(float(args, 1)?, "blend time")?;
+        trace_op(world, receiver, || {
+            let name = anim_value(args, 0).map_or("?".into(), |(_, n)| n);
+            format!("clear %{name} time={time}")
+        });
         with_anim(world, receiver, |anim| {
             let target = node(anim, args, 0)?;
             anim.clear(target, time)

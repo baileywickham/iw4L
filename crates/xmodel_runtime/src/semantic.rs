@@ -125,6 +125,31 @@ impl DObjSemanticState {
             hide_part_bits: self.hide_part_bits,
         })
     }
+
+    /// The tree advanced `dtime_seconds` past its snapshot: leaf times by
+    /// their inherited rates, weights toward their goals (presentation between
+    /// snapshots; the next snapshot replaces it). `None` without a tree, with
+    /// nothing to advance or when a clip does not resolve.
+    pub fn advanced(
+        &self,
+        dtime_seconds: f32,
+        resolve_clip: impl FnMut(&str) -> Option<Arc<AnimClip>>,
+    ) -> Option<Self> {
+        let tree = self.tree.as_ref()?;
+        if dtime_seconds <= 0.0 {
+            return None;
+        }
+        let mut runtime = tree.resolve(resolve_clip).ok()?;
+        runtime.update_inherited_rate(dtime_seconds).ok()?;
+        let mut out = self.clone();
+        let nodes = &mut out.tree.as_mut()?.nodes;
+        for (node, state) in nodes.iter_mut().zip(runtime.states()) {
+            node.state.time = state.time;
+            node.state.weight = state.weight;
+            node.state.goal_time = state.goal_time;
+        }
+        Some(out)
+    }
 }
 
 impl XAnimTreeSnapshot {

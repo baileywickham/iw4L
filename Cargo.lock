@@ -5256,12 +5256,16 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "render"
 version = "0.1.0"
 dependencies = [
+ "asset_core",
+ "asset_world",
  "assets",
  "bevy",
  "diag",
+ "entity_iw4",
  "frame",
  "fx",
  "hud",
+ "image",
  "naga",
  "net",
  "perf",
@@ -5271,8 +5275,11 @@ dependencies = [
  "render_fx",
  "render_gpu",
  "render_scene",
+ "replay",
  "serde",
  "serde_json",
+ "sim",
+ "xmodel_runtime",
 ]
 
 [[package]]
