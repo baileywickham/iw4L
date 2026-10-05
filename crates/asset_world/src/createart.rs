@@ -427,6 +427,34 @@ fn field_vec3(source: &str, field: &str) -> Option<[f32; 3]> {
     }
 }
 
+/// SP createart files define several fog sets and pick one with
+/// `vision_set_fog_changes( "<name>", t )`: the block of that set, if any.
+fn applied_vision_set_fog_block(source: &str) -> Option<&str> {
+    let lower = source.to_ascii_lowercase();
+    let quoted_after = |at: usize| -> Option<&str> {
+        let rest = &source[at..];
+        let open = rest.find('"')?;
+        let rest = &rest[open + 1..];
+        Some(&rest[..rest.find('"')?])
+    };
+    let call = lower.find("vision_set_fog_changes(")?;
+    let name = quoted_after(call)?.to_ascii_lowercase();
+    let mut at = 0;
+    while let Some(found) = lower[at..].find("create_vision_set_fog(") {
+        let begin = at + found;
+        at = begin + 1;
+        if quoted_after(begin).map(str::to_ascii_lowercase).as_deref() != Some(name.as_str()) {
+            continue;
+        }
+        let end = lower[at..]
+            .find("create_vision_set_fog(")
+            .map_or(source.len(), |next| at + next)
+            .min(if call > begin { call } else { source.len() });
+        return Some(&source[begin..end]);
+    }
+    None
+}
+
 pub fn parse_vision_set_fog(source: &str) -> Option<ExpFog> {
     if !source
         .to_ascii_lowercase()
@@ -434,12 +462,16 @@ pub fn parse_vision_set_fog(source: &str) -> Option<ExpFog> {
     {
         return None;
     }
+    let applied = applied_vision_set_fog_block(source);
+    let source = applied.unwrap_or(source);
+    let sun_enabled = field_f32(source, "sunFogEnabled").unwrap_or(0.0) != 0.0
+        || (applied.is_some() && field_f32(source, "sunRed").is_some());
     let start_dist = field_f32(source, "startDist")?;
     let halfway_dist = field_f32(source, "halfwayDist")?;
     let r = field_f32(source, "red")?;
     let g = field_f32(source, "green")?;
     let b = field_f32(source, "blue")?;
-    let sun = if field_f32(source, "sunFogEnabled").unwrap_or(0.0) != 0.0 {
+    let sun = if sun_enabled {
         let color = [
             field_f32(source, "sunRed")?,
             field_f32(source, "sunGreen")?,

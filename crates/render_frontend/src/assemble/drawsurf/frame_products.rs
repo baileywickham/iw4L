@@ -280,6 +280,8 @@ pub struct MaterialFrameInputs {
     pub sun_shadow: Option<super::SunShadowForcedFrame>,
 
     pub spot_receivers: Vec<Option<render_frame::SpotShadowReceiver>>,
+
+    pub primary_light_scales: Option<[f32; 2]>,
 }
 
 pub(crate) fn admit_material_generation(

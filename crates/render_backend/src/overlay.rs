@@ -360,6 +360,7 @@ pub fn apply_shadowable_light(
     eye: Vec3,
     float_time: f32,
     spot_receivers: &[Option<render_frame::SpotShadowReceiver>],
+    primary_light_scales: Option<[f32; 2]>,
 ) {
     let index = dpvs_iw4::GfxDrawSurf {
         packed: packed_drawsurf,
@@ -369,8 +370,8 @@ pub fn apply_shadowable_light(
         index,
         lights.get(usize::from(index)),
         [eye.x, eye.y, eye.z],
-        lighting_iw4::R_COLOR_SCALE_DEFAULT,
-        lighting_iw4::R_COLOR_SCALE_DEFAULT,
+        primary_light_scales.map_or(lighting_iw4::R_COLOR_SCALE_DEFAULT, |s| s[0]),
+        primary_light_scales.map_or(lighting_iw4::R_COLOR_SCALE_DEFAULT, |s| s[1]),
     );
     match packed {
         lighting_iw4::ShadowableLightPack::Unchanged => {}

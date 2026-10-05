@@ -264,6 +264,9 @@ pub(super) async fn walk_prepared_match(
                 std::mem::take(&mut so.common_weapons),
                 std::mem::take(&mut so.mission.zone_weapons),
             ));
+            if facts.compass.material.is_none() {
+                spec_ops_minimap(&mut facts.compass, &so.mission.scripts, &mut report);
+            }
             scripts.overlay(so.common);
             scripts.overlay(map_scripts);
             scripts.overlay(so.mission.scripts);
@@ -1493,6 +1496,38 @@ fn t5_map_under_iw4_rules(
     scripts
 }
 
+/// A Spec Ops mission sets the minimap up in its own level script
+/// (`maps\\_compass::setupMiniMap( "compass_map_favela" )`) when the base map's does not;
+/// the SP `compass_map_*` images are IWD files of the material's name.
+fn spec_ops_minimap(
+    compass: &mut asset_world::MapCompassDeclaration,
+    scripts: &crate::ScriptSources,
+    report: &mut Vec<String>,
+) {
+    for module in scripts.modules().filter(|m| m.starts_with("maps/so_")) {
+        let Ok(bytes) = scripts.read(module) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let Some(material) = asset_world::setup_minimap_material(&text) else {
+            continue;
+        };
+        compass.material = Some(material.to_owned());
+        compass.image = Some(material.to_owned());
+        compass.max_range = asset_world::compass_max_range(&text);
+        compass.script = Some(module.to_owned());
+        report.push(format!("compass: spec ops {module} declares `{material}`"));
+        return;
+    }
+}
+
+const SP_HUD_MATERIALS: &[&str] = &[
+    "objective",
+    "objective_onscreen",
+    "compassping_enemyfiring",
+    "compassping_friendlyfiring",
+];
+
 struct SoMissionWalk {
     common: crate::ScriptSources,
     common_weapons: crate::lane::ZoneWeapons,
@@ -1552,7 +1587,7 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
             load_strings(&found.path, &mut report);
             // The mission menus draw SP common images (EOG stars) and read its tables; walk
             // them beside the script walk of the same zone.
-            let wanted: Vec<String> = menus
+            let mut wanted: Vec<String> = menus
                 .as_ref()
                 .map(|menus| {
                     menus
@@ -1566,6 +1601,8 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
                         .collect()
                 })
                 .unwrap_or_default();
+            // The SP HUD's own objective and compass icons (`cgMedia`).
+            wanted.extend(SP_HUD_MATERIALS.iter().map(|name| (*name).to_owned()));
             // SP `ui.ff` beside it holds the menu images (`difficulty_star_*_hi_res`).
             let sources = [found.path.clone(), found.path.with_file_name("ui.ff")];
             let (walk, assets) = std::thread::scope(|scope| {

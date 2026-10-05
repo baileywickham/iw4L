@@ -157,7 +157,7 @@ const UNCOPIED: [&str; 6] = [
 /// `dospawn` / `stalingradspawn`: an actor at the spawner, set up by its aitype and
 /// `animscripts/init`; the spawner gets `"spawned"`.
 fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, String> {
-    let (classname, count) = {
+    let (classname, count, flags) = {
         let mut runtime = world.resource_mut::<Runtime>();
         let entity = runtime.entities.get(&spawner).ok_or("spawner is gone")?;
         if entity.kind != EntityKind::ActorSpawner {
@@ -169,7 +169,11 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
             Value::Float(n) => n as i32,
             _ => 0,
         };
-        (classname, count)
+        let flags = match runtime.object_field(spawner, "spawnflags") {
+            Value::Int(flags) => flags,
+            _ => 0,
+        };
+        (classname, count, flags)
     };
     if count <= 0 || world.resource::<ActorPool>().actors.len() >= MAX_ACTORS {
         return Ok(Value::Undefined);
@@ -244,6 +248,9 @@ fn spawn_actor(world: &mut World, spawner: u64, notify: bool) -> Result<Value, S
             Sim,
             "actor: animscripts/init::main waited (thread {serial})"
         );
+    }
+    if flags & super::actor_combat::SPAWNFLAG_ENEMYINFO != 0 {
+        super::actor_combat::spawn_enemy_info(world, actor, object);
     }
     // Spawned after this tick's think, the actor would reach the snapshot with
     // an empty tree (one tick in the bind pose); its state's animscript starts now.

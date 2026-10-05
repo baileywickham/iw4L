@@ -129,6 +129,12 @@ pub(crate) fn max_visible_dist(world: &mut World, target: u64) -> f32 {
 
 const DEFAULT_VISIBLE_DIST: f32 = 8192.0;
 
+/// `IW4L_AI_SIGHT_LOG=1`: every actor-to-player sight check and why it failed.
+fn sight_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("IW4L_AI_SIGHT_LOG").is_ok_and(|v| v == "1"))
+}
+
 /// `Actor_CanSeeEntity`: within `maxsightdistsqrd` and the target's
 /// `maxvisibledist`, inside the fov cone (`fovcosinebusy` while a scripted
 /// animation holds the actor; at least 90 degrees for its enemy or favorite
@@ -174,18 +180,36 @@ pub(crate) fn can_see(
     let yaw = vector_field(world, object, "angles")[1].to_radians();
     let len = len_sq.sqrt().max(1e-3);
     let facing = (yaw.cos() * d[0] + yaw.sin() * d[1]) / len;
-    let seen = len_sq <= max_sq
-        && (len_sq < 1.0 || facing >= fov)
-        && matches!(
-            entity_trace(
-                world,
-                from,
-                to,
-                MASK_AI_SIGHT,
-                ignore(world, object, target)
-            ),
-            TraceOutcome::Miss { .. }
+    let in_cone = len_sq <= max_sq && (len_sq < 1.0 || facing >= fov);
+    let trace = in_cone.then(|| {
+        entity_trace(
+            world,
+            from,
+            to,
+            MASK_AI_SIGHT,
+            ignore(world, object, target),
+        )
+    });
+    let seen = matches!(trace, Some(TraceOutcome::Miss { .. }));
+    if sight_log() && world.resource::<Runtime>().player_client(target).is_some() {
+        let blocked = match &trace {
+            None => "out of range/fov".to_string(),
+            Some(TraceOutcome::Miss { .. }) => "seen".to_string(),
+            Some(TraceOutcome::Hit {
+                fraction, collider, ..
+            }) => format!("blocked at {fraction:.2} by {collider:?}"),
+            Some(other) => format!("{other:?}"),
+        };
+        diag::info!(
+            Sim,
+            "actor sight: {} -> {} dist={:.0} facing={facing:.2} fov={fov:.2} eye_z={:.0}->{:.0}: {blocked}",
+            super::actor_combat::label(world, object),
+            super::actor_combat::label(world, target),
+            len_sq.sqrt(),
+            from[2],
+            to[2]
         );
+    }
     if let Some(a) = world.resource_mut::<ActorPool>().actors.get_mut(&id) {
         a.sight.retain(|_, (at, _)| now - *at < SIGHT_CACHE_MS);
         a.sight.insert(target, (now, seen));

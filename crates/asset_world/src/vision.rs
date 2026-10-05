@@ -14,6 +14,8 @@ pub struct FilmVision {
     pub glow_bloom_cutoff: f32,
     pub glow_bloom_desaturation: f32,
     pub glow_bloom_intensity: f32,
+    /// `r_primaryLightUseTweaks`: sun diffuse and specular strength.
+    pub primary_light_tweaks: Option<[f32; 2]>,
 }
 
 impl Default for FilmVision {
@@ -33,6 +35,7 @@ impl Default for FilmVision {
             glow_bloom_cutoff: 0.0,
             glow_bloom_desaturation: 0.0,
             glow_bloom_intensity: 0.0,
+            primary_light_tweaks: None,
         }
     }
 }
@@ -106,6 +109,9 @@ pub fn parse_film_vision_rawfile(
     let mut glow_bloom_cutoff = None;
     let mut glow_bloom_desaturation = None;
     let mut glow_bloom_intensity = None;
+    let mut light_use_tweaks = None;
+    let mut light_diffuse = None;
+    let mut light_specular = None;
     for line in source.lines().map(str::trim) {
         if line.is_empty() || line.starts_with("//") {
             continue;
@@ -134,6 +140,15 @@ pub fn parse_film_vision_rawfile(
             }
             "r_glowbloomintensity0" => {
                 glow_bloom_intensity = Some(scalar(value, "r_glowBloomIntensity0")?)
+            }
+            "r_primarylightusetweaks" => {
+                light_use_tweaks = Some(scalar(value, "r_primaryLightUseTweaks")? != 0.0)
+            }
+            "r_primarylighttweakdiffusestrength" => {
+                light_diffuse = Some(scalar(value, "r_primaryLightTweakDiffuseStrength")?)
+            }
+            "r_primarylighttweakspecularstrength" => {
+                light_specular = Some(scalar(value, "r_primaryLightTweakSpecularStrength")?)
             }
             _ => {}
         }
@@ -171,5 +186,7 @@ pub fn parse_film_vision_rawfile(
         glow_bloom_cutoff: glow.2,
         glow_bloom_desaturation: glow.3,
         glow_bloom_intensity: glow.4,
+        primary_light_tweaks: (light_use_tweaks == Some(true))
+            .then(|| [light_diffuse.unwrap_or(1.0), light_specular.unwrap_or(1.0)]),
     }))
 }

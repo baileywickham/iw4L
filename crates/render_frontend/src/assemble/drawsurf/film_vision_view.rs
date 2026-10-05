@@ -89,6 +89,9 @@ pub fn pack_film_vision(vision: asset_world::FilmVision) -> hud_iw4::VisionSetVa
         r_film_light_tint: vision.light_tint,
         r_film_medium_tint: vision.medium_tint,
         r_film_dark_tint: vision.dark_tint,
+        r_primary_light_use_tweaks: vision.primary_light_tweaks.is_some(),
+        r_primary_light_tweak_diffuse: vision.primary_light_tweaks.map_or(1.0, |t| t[0]),
+        r_primary_light_tweak_specular: vision.primary_light_tweaks.map_or(1.0, |t| t[1]),
         ..hud_iw4::VisionSetVars::default()
     }
 }
@@ -109,6 +112,10 @@ pub fn unpack_film_vision(vars: hud_iw4::VisionSetVars) -> asset_world::FilmVisi
         glow_bloom_cutoff: vars.r_glow_bloom_cutoff,
         glow_bloom_desaturation: vars.r_glow_bloom_desaturation,
         glow_bloom_intensity: vars.presented_glow_intensity0(),
+        primary_light_tweaks: vars.r_primary_light_use_tweaks.then_some([
+            vars.r_primary_light_tweak_diffuse,
+            vars.r_primary_light_tweak_specular,
+        ]),
     }
 }
 

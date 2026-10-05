@@ -329,6 +329,7 @@ fn overlay_draw_material(
         runtime.frame.view_origin,
         runtime.frame.float_time,
         &runtime.frame.spot_receivers,
+        runtime.frame.primary_light_scales,
     );
     match draw.kind {
         RetainedDrawKind::Smodel {

@@ -25,6 +25,7 @@ mod presentation_scale;
 mod reticle;
 mod scorebar;
 mod scoreboard;
+mod sp_objectives;
 mod splash;
 mod surface;
 mod targetmap;

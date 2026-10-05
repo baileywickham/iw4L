@@ -2,7 +2,7 @@ use super::args::{arg, int, string, vector};
 use crate::frame::FrameWorld;
 use crate::script::runtime::type_name;
 use crate::script::{Namespace, NativeRegistry, Runtime, Value};
-use crate::{CompassObjective, ObjectiveMatch, ObjectiveState, ScriptEffect};
+use crate::{CompassObjective, ObjectiveMatch, ObjectiveMessage, ObjectiveState, ScriptEffect};
 use bevy_ecs::prelude::World;
 use gamemode_iw4::Team;
 
@@ -23,6 +23,10 @@ pub(crate) struct ScriptObjective {
     entity: Option<Value>,
     team: Team,
     icon: String,
+    text: String,
+    text_args: Vec<String>,
+    message: ObjectiveMessage,
+    message_ms: i32,
 }
 
 impl ScriptObjective {
@@ -42,6 +46,49 @@ fn index(args: &[Value]) -> Result<u8, String> {
 fn state(args: &[Value], at: usize) -> Result<ObjectiveState, String> {
     let name = string(args, at)?;
     ObjectiveState::from_script(&name).ok_or_else(|| format!("Illegal objective state \"{name}\""))
+}
+
+fn text_arg(value: &Value) -> String {
+    match value {
+        Value::Int(v) => v.to_string(),
+        Value::Float(v) => v.to_string(),
+        Value::String(v) => v.to_string(),
+        Value::LocalizedString(v) => v.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// SP prints an objective's text on the HUD (the typewriter line) when it is
+/// given, updated, completed or failed, unless the `_nomessage` form was used.
+fn print_message(world: &mut World, index: u8, message: ObjectiveMessage) {
+    if !super::players::single_player(world) {
+        return;
+    }
+    let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
+    let mut row = objective(world, index);
+    if row.text.is_empty() {
+        return;
+    }
+    row.message = message;
+    row.message_ms = now;
+}
+
+fn state_message(state: ObjectiveState) -> Option<ObjectiveMessage> {
+    match state {
+        ObjectiveState::Active | ObjectiveState::Current => Some(ObjectiveMessage::Updated),
+        ObjectiveState::Done => Some(ObjectiveMessage::Completed),
+        ObjectiveState::Failed => Some(ObjectiveMessage::Failed),
+        _ => None,
+    }
+}
+
+fn set_text(world: &mut World, index: u8, args: &[Value]) {
+    let Some(Value::LocalizedString(text)) = args.get(1) else {
+        return;
+    };
+    let mut row = objective(world, index);
+    row.text = text.to_string();
+    row.text_args = args[2..].iter().map(text_arg).collect();
 }
 
 fn objective(world: &mut World, index: u8) -> bevy_ecs::world::Mut<'_, ScriptObjective> {
@@ -75,8 +122,12 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         // SP: objective_add( index, state, text, position ); MP: ( index, state, position, icon ).
         if let Some(Value::LocalizedString(text)) = args.get(2) {
             diag::info!(Sim, "objective {index}: {} \"{text}\"", string(args, 1)?);
+            objective(world, index).text = text.to_string();
             if let Some(target) = args.get(3) {
                 place(world, index, target)?;
+            }
+            if let Some(message) = state_message(state) {
+                print_message(world, index, message);
             }
             return Ok(Value::Undefined);
         }
@@ -88,14 +139,35 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         }
         Ok(Value::Undefined)
     });
-    for name in ["objective_string", "objective_string_nomessage"] {
-        registry.register(Function, name, |_, _, args| {
-            index(args)?;
-            Ok(Value::Undefined)
-        });
-    }
+    registry.register(Function, "objective_string", |world, _, args| {
+        let index = index(args)?;
+        set_text(world, index, args);
+        print_message(world, index, ObjectiveMessage::Updated);
+        Ok(Value::Undefined)
+    });
+    registry.register(Function, "objective_string_nomessage", |world, _, args| {
+        let index = index(args)?;
+        set_text(world, index, args);
+        Ok(Value::Undefined)
+    });
+    registry.register(Function, "objective_current", |world, _, args| {
+        for arg in args {
+            let Value::Int(index) = arg else { continue };
+            let Ok(index) = u8::try_from(*index) else {
+                continue;
+            };
+            if world
+                .resource::<Runtime>()
+                .engine
+                .objectives
+                .contains_key(&index)
+            {
+                print_message(world, index, ObjectiveMessage::Updated);
+            }
+        }
+        Ok(Value::Undefined)
+    });
     for name in [
-        "objective_current",
         "objective_current_nomessage",
         "objective_additionalcurrent",
         "objective_ring",
@@ -122,7 +194,11 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         if super::players::single_player(world) {
             diag::info!(Sim, "objective {index}: {}", string(args, 1)?);
         }
-        objective(world, index).state = state(args, 1)?;
+        let state = state(args, 1)?;
+        let changed = std::mem::replace(&mut objective(world, index).state, state) != state;
+        if changed && let Some(message) = state_message(state) {
+            print_message(world, index, message);
+        }
         Ok(Value::Undefined)
     });
     registry.register(Function, "objective_icon", |world, _, args| {
@@ -185,6 +261,10 @@ pub(crate) fn publish(world: &mut World) {
             origin,
             team: row.team,
             icon: row.icon,
+            text: row.text,
+            text_args: row.text_args,
+            message: row.message,
+            message_ms: row.message_ms,
         });
     }
     let runtime = world.resource::<Runtime>();
@@ -251,6 +331,7 @@ pub(crate) fn publish(world: &mut World) {
         .retain(|id, _| rows.iter().any(|(row, _)| row == id));
     runtime.engine.earthquakes.retain(|quake| quake.active(now));
     let earthquakes = runtime.engine.earthquakes.clone();
+    let enemy_actors = enemy_actors(world);
     let mut frame = FrameWorld::from_world(world);
     let effects = rows
         .into_iter()
@@ -286,5 +367,23 @@ pub(crate) fn publish(world: &mut World) {
         missile_vision,
         night_vision,
         pain_vision,
+        enemy_actors,
     };
+}
+
+/// Entity numbers of live actors hostile to the players: SP draws their weapon
+/// fire on the compass as enemy pings.
+fn enemy_actors(world: &World) -> Vec<u16> {
+    let runtime = world.resource::<Runtime>();
+    let Some(pool) = world.get_resource::<crate::actor::ActorPool>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<u16> = pool
+        .actors
+        .values()
+        .filter(|a| a.dying.is_none() && super::actor_combat::hostile(&a.team, "allies"))
+        .filter_map(|a| u16::try_from(runtime.entities.get(&a.object)?.number).ok())
+        .collect();
+    out.sort_unstable();
+    out
 }

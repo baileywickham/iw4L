@@ -3198,6 +3198,13 @@ fn encode_objectives(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
         }
         out.put_u8(objective.team as u8);
         put_text(out, &objective.icon);
+        put_text(out, &objective.text);
+        out.put_u8(objective.text_args.len().min(usize::from(u8::MAX)) as u8);
+        for arg in objective.text_args.iter().take(usize::from(u8::MAX)) {
+            put_text(out, arg);
+        }
+        out.put_u8(objective.message as u8);
+        out.put_i32(objective.message_ms);
     }
     debug_assert!(state.server_info.len() <= u16::MAX as usize);
     out.put_u16(state.server_info.len() as u16);
@@ -3270,6 +3277,10 @@ fn encode_objectives(out: &mut WireWriter, state: &sim::ObjectiveMatch) {
         out.put_u32(target.model.to_wire());
         out.put_u32(target.owner.0);
     }
+    out.put_u16(state.enemy_actors.len().min(usize::from(u16::MAX)) as u16);
+    for number in state.enemy_actors.iter().take(usize::from(u16::MAX)) {
+        out.put_u16(*number);
+    }
 }
 
 fn decode_objectives(input: &mut WireReader<'_>) -> Result<sim::ObjectiveMatch, WireError> {
@@ -3286,12 +3297,25 @@ fn decode_objectives(input: &mut WireReader<'_>) -> Result<sim::ObjectiveMatch, 
         let team = gamemode_iw4::Team::from_packed_u8(input.get_u8()?)
             .ok_or(WireError::Malformed("objective team"))?;
         let icon = get_text(input)?;
+        let text = get_text(input)?;
+        let arg_count = input.get_u8()?;
+        let mut text_args = Vec::with_capacity(usize::from(arg_count));
+        for _ in 0..arg_count {
+            text_args.push(get_text(input)?);
+        }
+        let message = sim::ObjectiveMessage::from_u8(input.get_u8()?)
+            .ok_or(WireError::Malformed("objective message"))?;
+        let message_ms = input.get_i32()?;
         state.compass.push(sim::CompassObjective {
             index,
             state: objective_state,
             origin,
             team,
             icon,
+            text,
+            text_args,
+            message,
+            message_ms,
         });
     }
     let count = input.get_u16()?;
@@ -3407,6 +3431,10 @@ fn decode_objectives(input: &mut WireReader<'_>) -> Result<sim::ObjectiveMatch, 
             return Err(WireError::Malformed("invalid vehicle target"));
         }
         state.vehicle_targets.push(target);
+    }
+    let count = input.get_u16()?;
+    for _ in 0..count {
+        state.enemy_actors.push(input.get_u16()?);
     }
     Ok(state)
 }

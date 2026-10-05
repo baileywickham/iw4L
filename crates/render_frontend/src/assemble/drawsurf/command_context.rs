@@ -875,6 +875,7 @@ pub(crate) fn update_command_context_code_sources(
     prepared: Res<PreparedSceneView>,
     cameras: Query<&Camera, With<FpvLens>>,
     scene: Option<Res<crate::prepare::scene::world::WorldScene>>,
+    film: Option<Res<super::film_vision_view::FilmVisionView>>,
 ) {
     if !prepared.ready {
         return;
@@ -893,6 +894,10 @@ pub(crate) fn update_command_context_code_sources(
     mat_frame.viewmodel_clip_from_world = Some(viewmodel_clip_from_world);
     mat_frame.viewmodel_near = Some(prepared.depth_hack_near);
     mat_frame.outdoor = outdoor.as_deref().copied();
+    mat_frame.primary_light_scales = film
+        .as_deref()
+        .and_then(|film| film.current)
+        .and_then(|vision| vision.primary_light_tweaks);
 
     mat_frame.code_sources = RuntimeCodeSources::default();
     mat_frame.sun_shadow = None;
@@ -969,7 +974,12 @@ pub(crate) fn update_command_context_code_sources(
         }
     }
     if let Some(light) = dir_light.as_deref() {
-        let _ = produce_dir_primary_light(&mut mat_frame.code_sources, light);
+        let mut light = *light;
+        if let Some([diffuse, specular]) = mat_frame.primary_light_scales {
+            light.diffuse_color_scale = diffuse;
+            light.specular_color_scale = specular;
+        }
+        let _ = produce_dir_primary_light(&mut mat_frame.code_sources, &light);
     }
     let hdr_exposure = t5_exposure
         .as_deref()

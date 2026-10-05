@@ -30,6 +30,9 @@ const OWNER_DRAW_PLAYER: i32 = 150;
 
 const OWNER_DRAW_ENEMIES: i32 = 175;
 
+/// SP `cgMedia` compass icon for an objective that names no icon of its own.
+const SP_OBJECTIVE_ICON: &str = "objective";
+
 #[derive(Component)]
 pub(crate) struct CompassRaster;
 
@@ -220,6 +223,25 @@ pub(crate) fn update_compass(
     .map(|line| radar_line_texture_center_s(line, player_xy, drawable.max_range));
     let mut live: Vec<([f32; 2], f32)> = Vec::new();
     for (&id, actor) in &latch.actors {
+        let enemy_actor = presented.snapshot().is_some_and(|s| {
+            u16::try_from(id)
+                .is_ok_and(|n| s.meta.objectives.enemy_actors.binary_search(&n).is_ok())
+        });
+        if enemy_actor {
+            if let Some(alpha) =
+                compass_sound_ping_fade(cg_clock.time(), actor.begin_fade_ms, actor.fade_seconds)
+            {
+                let offset = world_pos_to_compass_partial(
+                    north,
+                    player_xy,
+                    actor.last_pos,
+                    map_item.rect.h * COMPASS_SIZE_DEFAULT,
+                    drawable.max_range,
+                );
+                live.push((offset, alpha));
+            }
+            continue;
+        }
         let Some(meta) = presented
             .snapshot()
             .and_then(|s| s.meta.for_client(ClientId(id)))
@@ -283,14 +305,25 @@ pub(crate) fn update_compass(
             .unwrap_or(0);
         let team =
             gamemode_iw4::Team::from_packed_u8(team as u8).unwrap_or(gamemode_iw4::Team::Free);
+        let spec_ops = snapshot.meta.kind == gamemode_iw4::GameModeKind::SpecOps;
         let objectives = snapshot
             .meta
             .objectives
             .compass
             .iter()
-            .filter(|o| o.shows_to(team) && !o.icon.is_empty());
+            .filter(|o| o.shows_to(team))
+            .filter_map(|o| {
+                let icon = if !o.icon.is_empty() {
+                    o.icon.as_str()
+                } else if spec_ops && o.origin != [0.0; 3] {
+                    SP_OBJECTIVE_ICON
+                } else {
+                    return None;
+                };
+                Some((o, icon))
+            });
         let size = map_item.rect.h * COMPASS_SIZE_DEFAULT;
-        for objective in objectives {
+        for (objective, icon) in objectives {
             let offset = world_pos_to_compass_partial(
                 north,
                 player_xy,
@@ -320,7 +353,7 @@ pub(crate) fn update_compass(
                 s1: 1.0,
                 t1: 1.0,
                 color: [1.0, 1.0, 1.0, jam_fade],
-                material: objective.icon.clone(),
+                material: icon.to_owned(),
                 material_namespace: crate::images::HUD_CHROME_NAMESPACE,
                 op: Draw2dOp::StretchPic,
                 provenance: Draw2dProvenance::Objective,

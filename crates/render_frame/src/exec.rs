@@ -27,6 +27,8 @@ pub struct MaterialExecFrame {
     pub t5_falloff: Vec<T5LightFalloffPack>,
 
     pub spot_receivers: Vec<Option<SpotShadowReceiver>>,
+    /// Vision `r_primaryLightTweak{Diffuse,Specular}Strength` while the vision uses them.
+    pub primary_light_scales: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -18,6 +18,7 @@ pub fn refresh(
     });
     frame.viewmodel_clip_from_world = res.viewmodel_clip_from_world;
     frame.viewmodel_near = res.viewmodel_near;
+    frame.primary_light_scales = res.primary_light_scales;
     frame.primary_lights.clear();
     frame.attenuation.clear();
     frame.t5_falloff.clear();

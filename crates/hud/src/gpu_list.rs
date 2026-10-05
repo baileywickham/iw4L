@@ -193,6 +193,7 @@ pub struct HudTessPass {
     pub breath_hint: TessJob,
     pub damage_direction: TessJob,
     pub use_hint: TessJob,
+    pub sp_objectives: TessJob,
     pub hud_elems: TessJob,
     pub hud_elems_back: TessJob,
     pub script_menus: TessJob,

@@ -199,7 +199,7 @@ pub(crate) fn update_smodel_lighting(
         return;
     };
 
-    let mut visible: Vec<usize> = Vec::new();
+    let mut visible: Vec<(f32, usize)> = Vec::new();
     let eye = prepared.ready.then_some(lock_pvs.dpvs_eye(&prepared));
     for slot in 0..lighting.tiles.len() {
         if lighting.tiles.get(slot).is_none_or(|t| t.is_none()) {
@@ -227,8 +227,21 @@ pub(crate) fn update_smodel_lighting(
         ) {
             continue;
         }
-        visible.push(slot);
+        let dist_sq = eye.map_or(0.0, |eye| {
+            let d = [eye.x - origin[0], eye.y - origin[1], eye.z - origin[2]];
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+        });
+        visible.push((dist_sq, slot));
     }
+    // More visible lit models than atlas entries (open SP maps like boneyard): the
+    // nearest keep lighting; the farthest are not touched this frame, so their
+    // entries age out and are handed to nearer models instead of failing them.
+    let budget = (lighting.smodel_entry_limit as usize).saturating_sub(1);
+    if visible.len() > budget {
+        visible.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        visible.truncate(budget);
+    }
+    let visible: Vec<usize> = visible.into_iter().map(|(_, slot)| slot).collect();
 
     let mut assigned = 0u32;
     let mut reused = 0u32;

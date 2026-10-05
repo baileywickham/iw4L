@@ -19,7 +19,9 @@ use bevy_ecs::prelude::World;
 const SENSE_TICKS: i64 = 2;
 /// Sight traces all actors may spend in one tick.
 const SIGHT_BUDGET: u32 = 24;
-/// A known enemy not seen or reported for this long is forgotten.
+/// A known enemy not seen or reported for this long is forgotten, unless it is
+/// the player the actor is fighting (IW4 has no forget time; the actor keeps
+/// hunting the player's last known position).
 const FORGET_MS: i64 = 20_000;
 /// Squadmates this close hear about the enemy an actor sees (`ai_eventDistNewEnemy`).
 const NEW_ENEMY_DIST: f32 = 1024.0;
@@ -235,6 +237,33 @@ fn share(world: &mut World, id: ActorId, object: u64, target: u64, now: i64) {
     }
 }
 
+/// Spawner flag `ENEMYINFO` (8): the actor spawns knowing where every hostile
+/// sentient is, so it turns to and engages them instead of idling until it
+/// happens to see one.
+pub(crate) const SPAWNFLAG_ENEMYINFO: i32 = 8;
+
+pub(crate) fn spawn_enemy_info(world: &mut World, id: ActorId, object: u64) {
+    let Some(team) = world
+        .resource::<ActorPool>()
+        .actors
+        .get(&id)
+        .map(|a| a.team.clone())
+    else {
+        return;
+    };
+    let now = now_ms(world);
+    let targets: Vec<u64> = sentients(world)
+        .into_iter()
+        .filter(|s| s.object != object && hostile(&team, &s.team))
+        .map(|s| s.object)
+        .collect();
+    for target in targets {
+        if !ignores(world, object, target) {
+            learn(world, id, target, false, now);
+        }
+    }
+}
+
 /// One actor's look: sight checks against hostile sentients, then enemy choice
 /// by distance, threat bias, recent attackers and `favoriteenemy`.
 fn sense(
@@ -271,6 +300,14 @@ fn sense(
         .iter()
         .filter(|s| s.object != object && hostile(&team, &s.team))
         .collect();
+    let was_visible = current.is_some_and(|enemy| {
+        world
+            .resource::<ActorPool>()
+            .actors
+            .get(&id)
+            .and_then(|a| a.sight.get(&enemy))
+            .is_some_and(|(_, seen)| *seen)
+    });
     let mut seen_any = Vec::new();
     for target in &targets {
         if ignores(world, object, target.object) {
@@ -304,7 +341,9 @@ fn sense(
     let mut forget = Vec::new();
     for (target, info) in known {
         let still = targets.iter().any(|s| s.object == target);
-        if !still || now - info.time_ms > FORGET_MS {
+        let tracked =
+            current == Some(target) && world.resource::<Runtime>().player_client(target).is_some();
+        if !still || (!tracked && now - info.time_ms > FORGET_MS) {
             forget.push(target);
             continue;
         }
@@ -342,6 +381,15 @@ fn sense(
         && seen_any.contains(&enemy)
     {
         share(world, id, object, enemy, now);
+        if current != Some(enemy) || !was_visible {
+            diag::info!(
+                Sim,
+                "actor: {} sees its enemy {}",
+                label(world, object),
+                label(world, enemy)
+            );
+            raise(world, Value::Object(object), "enemy_visible", Vec::new());
+        }
     }
 }
 

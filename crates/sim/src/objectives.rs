@@ -22,6 +22,7 @@ pub struct ObjectiveMatch {
     pub missile_vision: Option<crate::VisionChange>,
     pub night_vision: Option<crate::VisionChange>,
     pub pain_vision: Option<crate::VisionChange>,
+    pub enemy_actors: Vec<u16>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -85,6 +86,34 @@ pub struct CompassObjective {
     pub origin: [f32; 3],
     pub team: Team,
     pub icon: String,
+    pub text: String,
+    pub text_args: Vec<String>,
+    pub message: ObjectiveMessage,
+    pub message_ms: i32,
+}
+
+/// The typewritten SP objective line an objective change prints: which glow it
+/// gets (`con_typewriterColorGlow*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ObjectiveMessage {
+    #[default]
+    None = 0,
+    Updated = 1,
+    Completed = 2,
+    Failed = 3,
+}
+
+impl ObjectiveMessage {
+    pub fn from_u8(raw: u8) -> Option<Self> {
+        Some(match raw {
+            0 => Self::None,
+            1 => Self::Updated,
+            2 => Self::Completed,
+            3 => Self::Failed,
+            _ => return None,
+        })
+    }
 }
 
 impl ObjectiveMatch {
