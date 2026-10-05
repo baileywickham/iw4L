@@ -61,6 +61,7 @@ Typical run: `IW4L_AIR_TIMEOUT=600 ~/bin/iw4l-air "$PWD" --env IW4L_GSC_STUB_NAT
 | `IW4L_WINDOW_ON_TOP=1`, `IW4L_WINDOW_POS=x,y` | keep the window presented / place it |
 | `IW4L_PIPELINED_RENDERING=0`, `IW4L_FRAME_LATENCY` | render pipelining (on by default on macOS now) |
 | `IW4L_PROFILE_PATH` | isolate the profile (stars) file |
+| `IW4L_FRAME_DUMP=<dir>[,fps]` (+ `_FROM`, `_WIDTH`, `_MAX`, `_SKIP_MS`, `_NO_PNG`) | vibe check: fixed-step demo replay, every frame to PNG + per-entity presentation metrics; `tools/specops/vibe/` (`capture.sh`, `vibe.py`, `REVIEW.md`) |
 
 ## How work was organised
 

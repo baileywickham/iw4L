@@ -23,6 +23,13 @@ serde.workspace = true
 serde_json.workspace = true
 naga = { version = "29", features = ["wgsl-in"] }
 perf.workspace = true
+asset_core.workspace = true
+asset_world.workspace = true
+entity_iw4.workspace = true
+replay = { path = "../replay" }
+sim.workspace = true
+xmodel_runtime.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

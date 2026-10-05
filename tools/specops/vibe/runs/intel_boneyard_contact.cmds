@@ -1,0 +1,18 @@
+# so_intel_boneyard "first contact" vibe capture: hop straight to the first enemy group
+# (~300-600 u away), watch them react without shooting, then let the dev aimer fight.
+wait world
+spawn 0
+god
+wait 4s
+tp -3823 -3146 5 60.0 0.0 &
+wait 4s
+tp -3697 -2817 33 25.0 0.0 &
+wait 12s
+autoaim on fire
+wait 14s
+autoaim off
+tp -3464 -2674 32 20.0 0.0 &
+wait 10s
+tp -2783 -2655 50 20.0 0.0 &
+wait 10s
+finish_run

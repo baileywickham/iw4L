@@ -47,6 +47,7 @@ impl Plugin for RenderPlugin {
                 .chain()
                 .in_set(ClientSet::Diag),
         );
+        crate::diag::vibe::register_frame_dump(app);
         if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render_app.add_systems(
                 bevy::render::ExtractSchedule,

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Pull a directory a run left on the Air back to this Mac.
+# usage: iw4l-air-pull <worktree-dir> <path relative to the Air copy of the worktree> <local-dir>
+# e.g.   iw4l-air-pull "$PWD" iw4l-artifacts/vibe/intel context/vibe/intel
+set -euo pipefail
+WT=$(cd "$1" && pwd)
+NAME=$(basename "$WT")
+mkdir -p "$3"
+rsync -a -e "ssh -i $HOME/.ssh/macnode" "baileywickham@192.168.0.50:runs/$NAME/$2/" "$3/"
+echo "pulled: $3 ($(ls "$3" | wc -l | tr -d ' ') files)"

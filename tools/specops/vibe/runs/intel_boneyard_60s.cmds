@@ -1,0 +1,21 @@
+# so_intel_boneyard, first ~60 s for a vibe capture: watch the start area while the first
+# enemies come in (god on, no shooting), then let the dev aimer fight for a while so deaths and
+# pain show up, then two short hops up the opening route. capture.sh adds record/stoprecord.
+wait world
+spawn 0
+god
+wait 1s
+tp -5056 -5152 20 45.0 0.0 &
+wait 12s
+look 70 0
+wait 6s
+tp -4631 -4498 9 51.0 0.0 &
+wait 8s
+autoaim on fire
+wait 12s
+autoaim off
+tp -4203 -3872 31 54.8 0.0 &
+wait 10s
+tp -3823 -3146 5 69.1 0.0 &
+wait 10s
+finish_run
