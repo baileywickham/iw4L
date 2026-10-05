@@ -1134,6 +1134,12 @@ pub(crate) fn load_field(world: &mut World, client: u32, name: &str) -> Option<V
             });
         }
     }
+    // `_gameskill::playerHealthRegen` reads it every hit; undefined kills the regen thread.
+    if name == "attackercount" && single_player(world) {
+        let object = world.resource::<Runtime>().players.get(&client)?.object;
+        let count = super::actor_combat::player_attacker_count(world, object);
+        return Some(Value::Int(count as i32));
+    }
     // SP sentient fields the engine gives every player before script writes them.
     if let Some(default) = match name {
         "maxvisibledist" => Some(Value::Float(8192.0)),

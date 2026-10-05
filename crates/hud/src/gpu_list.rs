@@ -191,6 +191,7 @@ pub struct HudTessPass {
     pub targetmap: TessJob,
     pub mantle_hint: TessJob,
     pub breath_hint: TessJob,
+    pub damage_direction: TessJob,
     pub use_hint: TessJob,
     pub hud_elems: TessJob,
     pub hud_elems_back: TessJob,

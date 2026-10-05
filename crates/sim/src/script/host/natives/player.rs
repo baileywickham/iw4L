@@ -585,6 +585,7 @@ pub(crate) const SCAVENGER_ITEM_CLASS: &str = "scavenger_item";
 /// SP maps place weapons as `weapon_<name>` entities; the engine spawns them as
 /// pickups at load, which `_load::weapon_ammo` then fills (`itemweaponsetammo`).
 /// The map entity keeps its keys and becomes the item; its model is hidden.
+/// Unless suspended they drop to the floor, keeping their editor angles.
 pub(crate) fn install_weapon_items(world: &mut World) {
     if !super::super::players::single_player(world) {
         return;
@@ -605,31 +606,38 @@ pub(crate) fn install_weapon_items(world: &mut World) {
         let Ok(weapon) = script_player::weapon_named(&FrameWorld::from_world(world), &name) else {
             continue;
         };
-        let (origin, yaw) = {
+        let (origin, angles, spawnflags) = {
             let mut runtime = world.resource_mut::<Runtime>();
             let origin = match runtime.object_field(id, "origin") {
                 Value::Vector(v) => v,
                 _ => continue,
             };
-            let yaw = match runtime.object_field(id, "angles") {
-                Value::Vector(v) => v[1],
-                _ => 0.0,
+            let angles = match runtime.object_field(id, "angles") {
+                Value::Vector(v) => v,
+                _ => [0.0; 3],
             };
-            (origin, yaw)
+            let spawnflags = match runtime.object_field(id, "spawnflags") {
+                Value::Int(flags) => flags,
+                _ => 0,
+            };
+            (origin, angles, spawnflags)
         };
-        let number = crate::item::spawn_weapon_item(
+        let number = crate::item::spawn_placed_weapon_item(
             &mut FrameWorld::from_world(world),
             tick,
             weapon,
             origin,
-            yaw,
-            playerstate_iw4::ENTITYNUM_NONE,
-            false,
+            angles,
+            spawnflags,
         );
         if number == playerstate_iw4::ENTITYNUM_NONE {
             continue;
         }
+        let rest = FrameWorld::from_world(world)
+            .dropped_item_by_number(number)
+            .map_or(origin, |item| item.origin);
         let mut runtime = world.resource_mut::<Runtime>();
+        runtime.set_object_field(id, "origin", Value::Vector(rest));
         let entity = runtime.entities.get_mut(&id).unwrap();
         entity.kind = super::super::entities::EntityKind::Item(number);
         if let Some(presence) = entity.presence.take() {

@@ -894,7 +894,7 @@ struct AccuracyTerms {
 
 /// Hostile actors whose enemy is `player` and that see it now: the player's
 /// attacker count (each actor's sight result may be up to 250 ms old).
-fn player_attacker_count(world: &mut World, player: u64) -> usize {
+pub(crate) fn player_attacker_count(world: &mut World, player: u64) -> usize {
     let attackers: Vec<(i32, ActorId, u64)> = {
         let runtime = world.resource::<Runtime>();
         let mut rows: Vec<(i32, ActorId, u64)> = world

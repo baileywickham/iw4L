@@ -919,15 +919,26 @@ fn register_entities(registry: &mut NativeRegistry) {
             let weapon = crate::script_player::weapon_named(&frame, name)
                 .map_err(|_| format!("unable to spawn \"{classname}\" entity"))?;
             let tick = world.resource::<crate::step::StepRequest>().tick;
-            let number = crate::item::spawn_weapon_item(
-                &mut crate::frame::FrameWorld::from_world(world),
-                tick,
-                weapon,
-                origin,
-                0.0,
-                playerstate_iw4::ENTITYNUM_NONE,
-                false,
-            );
+            let number = if super::super::players::single_player(world) {
+                crate::item::spawn_placed_weapon_item(
+                    &mut crate::frame::FrameWorld::from_world(world),
+                    tick,
+                    weapon,
+                    origin,
+                    [0.0; 3],
+                    flags,
+                )
+            } else {
+                crate::item::spawn_weapon_item(
+                    &mut crate::frame::FrameWorld::from_world(world),
+                    tick,
+                    weapon,
+                    origin,
+                    0.0,
+                    playerstate_iw4::ENTITYNUM_NONE,
+                    false,
+                )
+            };
             if number == playerstate_iw4::ENTITYNUM_NONE {
                 return Ok(Value::Undefined);
             }

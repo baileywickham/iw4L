@@ -44,6 +44,7 @@ impl Plugin for HudPlugin {
             .init_resource::<ReticleAdsLatch>()
             .init_resource::<IrisLetterboxFill>()
             .init_resource::<BloodOverlayLatch>()
+            .init_resource::<crate::damage_direction::DamageDirections>()
             .init_resource::<BloodGpuJob>()
             .init_resource::<FlashWhiteoutLatch>()
             .init_resource::<FlashGpuJob>()
@@ -117,6 +118,7 @@ impl Plugin for HudPlugin {
                             update_killcam_skip,
                             update_mantle_hint,
                             crate::breath_hint::update,
+                            crate::damage_direction::update,
                             crate::use_hint::update,
                             update_hud_elems,
                             update_targetmap,
@@ -144,6 +146,7 @@ impl Plugin for HudPlugin {
                     flush_scoreboard_tess,
                     flush_mantle_hint_tess,
                     flush_breath_hint_tess,
+                    flush_damage_direction_tess,
                     flush_use_hint_tess,
                     flush_hud_elems_tess,
                     flush_targetmap_tess,
@@ -338,6 +341,7 @@ fn ensure_hud_root(mut commands: Commands, existing: Query<Entity, With<HudRoot>
             spawn_scoreboard(root);
             spawn_mantle_hint(root);
             crate::font_overlay::spawn_overlay(root, crate::breath_hint::BreathHintRaster);
+            crate::font_overlay::spawn_overlay(root, crate::damage_direction::DamageDirectionRaster);
             crate::font_overlay::spawn_overlay(root, crate::use_hint::UseHintRaster);
             spawn_hud_elems(root);
             spawn_targetmap(root);
@@ -856,6 +860,36 @@ fn flush_breath_hint_tess(
         return;
     }
     let job = std::mem::take(&mut pass.breath_hint);
+    if let Ok((_, mut host, mut latch)) = hint.single_mut() {
+        gpu_list::apply_tess_job(
+            job,
+            &mut host,
+            &mut latch,
+            &mut hud_images,
+            &mut images,
+            &mut frame,
+            surface.width(),
+            surface.height(),
+        );
+    }
+}
+
+fn flush_damage_direction_tess(
+    surface: Res<crate::surface::Hud2dSurface>,
+    mut pass: ResMut<HudTessPass>,
+    mut hud_images: ResMut<HudImages>,
+    mut images: ResMut<Assets<Image>>,
+    mut frame: ResMut<crate::gpu_list::HudTessGpuFrame>,
+    mut hint: Query<
+        (Entity, &mut Node, &mut crate::gpu_list::GpuListLatch),
+        With<crate::damage_direction::DamageDirectionRaster>,
+    >,
+) {
+    let _body = gpu_list::TessBody::open();
+    if !surface.is_ready() {
+        return;
+    }
+    let job = std::mem::take(&mut pass.damage_direction);
     if let Ok((_, mut host, mut latch)) = hint.single_mut() {
         gpu_list::apply_tess_job(
             job,

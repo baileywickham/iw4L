@@ -74,6 +74,15 @@ pub(crate) fn damage(world: &mut World, tick: crate::Tick, hit: &Hit) {
             return;
         };
         movement_iw4::update_damage_timer(ps, amount, Some(hit.dir));
+        // `P_DamageFeedback`: the HUD's hit_direction arcs and the view kick read these.
+        if hit.dir == [0.0; 3] {
+            ps.damage_yaw = 255;
+            ps.damage_pitch = 255;
+        } else {
+            let angles = math_iw4::vect_to_angles(hit.dir);
+            ps.damage_pitch = (angles[0] / 360.0 * 256.0) as u32 & 0xff;
+            ps.damage_yaw = (angles[1] / 360.0 * 256.0) as u32 & 0xff;
+        }
         ps.damage_count = ps.damage_count.saturating_add(1);
         ps.damage_event = ps.damage_event.wrapping_add(1);
         let after = ps.health - amount;

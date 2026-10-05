@@ -344,6 +344,42 @@ pub(crate) fn spawn_weapon_item(
     )
 }
 
+/// `spawnflags` bit that keeps a placed item where the map put it.
+pub(crate) const ITEM_SUSPENDED: i32 = 1;
+const ITEM_DROP_DISTANCE: f32 = 4096.0;
+
+/// `FinishSpawningItem`: a placed (SP) weapon item drops straight down onto
+/// the floor unless it is suspended, keeping its editor angles (maps lay most
+/// guns on their side with roll 90). An item that starts in solid stays put.
+pub(crate) fn spawn_placed_weapon_item(
+    world: &mut FrameWorld,
+    tick: Tick,
+    weapon: u32,
+    origin: [f32; 3],
+    angles: [f32; 3],
+    spawnflags: i32,
+) -> i32 {
+    let mut origin = origin;
+    if spawnflags & ITEM_SUSPENDED == 0 {
+        let below = [origin[0], origin[1], origin[2] - ITEM_DROP_DISTANCE];
+        let hit = world.trace_clip(
+            origin,
+            below,
+            ITEM_MINS,
+            ITEM_MAXS,
+            crate::bullet_collision::MASK_SHOT,
+        );
+        if hit.startsolid == 0 && hit.allsolid == 0 && hit.fraction < 1.0 {
+            origin = hit.endpos;
+        }
+    }
+    let number = spawn_weapon_item(world, tick, weapon, origin, angles[1], ENTITYNUM_NONE, false);
+    if let Some(item) = world.dropped_item_mut_by_number(number) {
+        item.state.apos_tr_base = angles;
+    }
+    number
+}
+
 pub(crate) fn drop_weapon(
     world: &mut FrameWorld,
     tick: Tick,

@@ -3,6 +3,7 @@ mod blood;
 mod breath_hint;
 mod chrome;
 mod compass;
+mod damage_direction;
 mod draw2d;
 mod expr_cache;
 mod flash;

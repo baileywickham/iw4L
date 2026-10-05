@@ -311,6 +311,11 @@ pub(crate) fn update_scorebar(
         hide(&mut pass);
         return;
     };
+    // SP's hud has no team score bar; Spec Ops shows its own script hudelems.
+    if snap.meta.kind == gamemode_iw4::GameModeKind::SpecOps {
+        hide(&mut pass);
+        return;
+    }
 
     let mut others = [0i32; 18];
     let mut n_others = 0usize;
