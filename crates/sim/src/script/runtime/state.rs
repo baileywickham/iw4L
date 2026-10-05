@@ -3,7 +3,73 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use crate::script::host;
-use crate::script::{ArrayKey, Fault, Native, Program, StringTable, Value};
+use crate::script::{Fault, Native, Program, StringTable, Value};
+
+/// Script objects and arrays by id. Every field and element access looks
+/// one up, so they are hashed (ids are sequential; one multiply spreads
+/// them) rather than kept in an ordered map. Nothing iterates them in an
+/// order that reaches script; the fields and elements inside stay ordered.
+pub(crate) type IdMap<V> =
+    std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+#[derive(Default, Clone, Copy)]
+pub(crate) struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(self.0 ^ u64::from(*byte));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// The script objects' field maps, counting every mutable access: a reader
+/// that derived something from fields (the collision settle) can tell that
+/// nothing was written since. Reads go through `Deref`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Objects {
+    map: IdMap<BTreeMap<u32, Value>>,
+    writes: u64,
+}
+
+impl std::ops::Deref for Objects {
+    type Target = IdMap<BTreeMap<u32, Value>>;
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl Objects {
+    pub(crate) fn get_mut(&mut self, id: &u64) -> Option<&mut BTreeMap<u32, Value>> {
+        self.writes += 1;
+        self.map.get_mut(id)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        id: u64,
+        fields: BTreeMap<u32, Value>,
+    ) -> Option<BTreeMap<u32, Value>> {
+        self.writes += 1;
+        self.map.insert(id, fields)
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&u64, &mut BTreeMap<u32, Value>) -> bool) {
+        self.writes += 1;
+        self.map.retain(keep);
+    }
+
+    /// Mutable accesses so far; unchanged means no field was written.
+    pub(crate) fn writes(&self) -> u64 {
+        self.writes
+    }
+}
 
 #[derive(Resource, Clone, Debug, Default)]
 pub(crate) struct Runtime {
@@ -19,9 +85,9 @@ pub(crate) struct Runtime {
     pub(crate) dying: Vec<u64>,
     pub(crate) last_tick: Option<crate::Tick>,
     pub(crate) started: bool,
-    pub(crate) objects: BTreeMap<u64, BTreeMap<u32, Value>>,
+    pub(crate) objects: Objects,
     pub(crate) next_object: u64,
-    pub(crate) arrays: BTreeMap<u64, BTreeMap<ArrayKey, Value>>,
+    pub(crate) arrays: IdMap<crate::script::ScriptArray>,
     pub(crate) dynamic_symbols: BTreeMap<Arc<str>, u32>,
     pub(crate) buckets: BTreeMap<i64, VecDeque<u64>>,
     pub(crate) spawned: Vec<u64>,
@@ -89,6 +155,15 @@ pub(crate) struct Runtime {
     /// When the first party member joined; a missing partner stops being waited for later.
     pub(crate) party_since_ms: Option<i64>,
     pub(crate) sp: host::natives::sp::SpState,
+    /// `next_object` at the last heap collection, and ticks since it.
+    pub(crate) heap_mark: u64,
+    pub(crate) heap_ticks: u32,
+    /// Bumped when a waiter can newly be waiting on a deleted entity (an
+    /// entity deleted, or a wait registered on one): resuming a thread only
+    /// scans the wait list for that when it changed since the tick's sweep.
+    pub(crate) doom_epoch: u64,
+    /// The poses the last collision settle read (see `presence::settle_collision`).
+    pub(crate) settle_cache: host::presence::SettleCache,
 }
 
 impl Runtime {

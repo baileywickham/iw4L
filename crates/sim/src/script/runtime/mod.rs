@@ -8,7 +8,6 @@ use super::{
 };
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) use lifecycle::{copy_state, install, install_level, reset};
@@ -239,7 +238,7 @@ pub(super) fn run_now_thread(
         retire(&mut world.resource_mut::<Runtime>(), serial);
         None
     } else {
-        world.spawn(thread);
+        spawn_thread_entity(world, thread);
         Some(serial)
     };
     match world.resource::<Runtime>().fault.clone() {
@@ -273,7 +272,7 @@ fn spawn_thread(
     let thread = new_thread(world, program, function, receiver, args)?;
     let serial = thread.serial;
     world.resource_mut::<Runtime>().spawned.push(serial);
-    world.spawn(thread);
+    spawn_thread_entity(world, thread);
     Ok(serial)
 }
 
@@ -327,7 +326,7 @@ fn run_inline(
     if child.state == ThreadState::Complete {
         retire(&mut runtime, child.serial);
     } else {
-        world.spawn(child);
+        spawn_thread_entity(world, child);
     }
     parent.stack.push(Value::Undefined);
     let mut runtime = world.resource_mut::<Runtime>();
@@ -647,25 +646,38 @@ fn instruction(
             let Value::Array(id) = pop(thread)? else {
                 return Err("foreach requires an array".into());
             };
-            let keys: Vec<_> = world
-                .resource::<Runtime>()
-                .arrays
-                .get(&id)
-                .ok_or("invalid array reference")?
-                .keys()
-                .map(|key| match key {
-                    ArrayKey::Integer(i) => Value::Int(*i),
-                    ArrayKey::String(s) => Value::String(s.clone()),
-                })
-                .collect();
+            let keys = crate::script::ScriptArray::from_values(
+                world
+                    .resource::<Runtime>()
+                    .arrays
+                    .get(&id)
+                    .ok_or("invalid array reference")?
+                    .keys()
+                    .map(|key| match key {
+                        ArrayKey::Integer(i) => Value::Int(i),
+                        ArrayKey::String(s) => Value::String(s),
+                    })
+                    .collect(),
+            );
             let value = allocate_array(world)?;
             let Value::Array(id) = value else {
                 unreachable!()
             };
             let mut runtime = world.resource_mut::<Runtime>();
-            let array = runtime.arrays.get_mut(&id).unwrap();
-            for (i, key) in keys.into_iter().enumerate() {
-                array.insert(ArrayKey::Integer(i as i32), key);
+            runtime.arrays.insert(id, keys);
+            // `foreach` stores the key list in a hidden local next. The list
+            // is this op's own new array, so that store's copy (a second
+            // array of every key) is skipped; it still spends its instruction.
+            let frame = thread.frames.last().unwrap();
+            if let Some((_, Op::Store(slot))) = program.functions[frame.function].code.get(frame.pc)
+                && runtime.budget > 0
+            {
+                runtime.budget -= 1;
+                let slot = *slot as usize;
+                let frame = thread.frames.last_mut().unwrap();
+                frame.pc += 1;
+                frame.locals[slot] = value;
+                return Ok(());
             }
             thread.stack.push(value);
         }
@@ -763,9 +775,9 @@ fn instruction(
         Op::LoadIndex => {
             let key = array_key(pop(thread)?)?;
             let receiver = pop(thread)?;
-            let mut runtime = world.resource_mut::<Runtime>();
             let value = match receiver {
-                Value::Array(id) => runtime
+                Value::Array(id) => world
+                    .resource::<Runtime>()
                     .arrays
                     .get(&id)
                     .ok_or("invalid array reference")?
@@ -773,6 +785,7 @@ fn instruction(
                     .cloned()
                     .unwrap_or(Value::Undefined),
                 Value::Object(id) => {
+                    let mut runtime = world.resource_mut::<Runtime>();
                     let field = object_key(&mut runtime, key)?;
                     runtime
                         .objects
@@ -866,12 +879,7 @@ fn instruction(
                 .len()
                 .checked_sub(argc)
                 .ok_or("invalid IR: argument underflow")?;
-            let args = thread
-                .stack
-                .split_off(base)
-                .into_iter()
-                .map(|value| copy_value(world, value))
-                .collect::<Result<Vec<_>, _>>()?;
+            let raw = thread.stack.split_off(base);
             let callee = match op {
                 Op::Call(callee, _, _) | Op::Spawn(callee, _, _) => callee,
                 Op::Indirect(..) => match pop(thread)? {
@@ -885,6 +893,23 @@ fn instruction(
                     }
                 },
                 _ => unreachable!(),
+            };
+            // Arguments are copies (arrays are values), except for the
+            // predicates that only look at them: `isdefined( level.bigArray )`
+            // deep-copied the array on every test.
+            let args = match callee {
+                Callee::Native(index)
+                    if matches!(
+                        program.natives[index as usize].name,
+                        "isdefined" | "isarray"
+                    ) =>
+                {
+                    raw
+                }
+                _ => raw
+                    .into_iter()
+                    .map(|value| copy_value(world, value))
+                    .collect::<Result<Vec<_>, _>>()?,
             };
             let receiver = if method {
                 pop(thread)?
@@ -914,10 +939,14 @@ fn instruction(
                     let native = world.resource::<Runtime>().natives[index as usize];
                     let name = &program.natives[index as usize].name;
                     // A defect in one builtin costs its caller an undefined result, not the match.
+                    let timed = usage::stats_enabled().then(std::time::Instant::now);
                     let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         native(world, &receiver, &args)
                     }))
                     .unwrap_or_else(|_| Err("builtin panicked".into()));
+                    if let Some(timed) = timed {
+                        usage::hitch_native(*name, timed.elapsed().as_nanos() as u64);
+                    }
                     let value = match value {
                         Err(m) if m == lifecycle::STUB_FAULT => {
                             let mut runtime = world.resource_mut::<Runtime>();
@@ -1002,7 +1031,10 @@ fn instruction(
             if usage::enabled() {
                 note_field(world, program, id, field, false);
             }
-            if let Some(client) = world.resource::<Runtime>().player_client(id)
+            // One entity lookup decides which engine-backed fields apply; a
+            // plain script object (most receivers) has none of them.
+            let engine = engine_fields(world, id);
+            if let EngineFields::Player(client) = engine
                 && let Some(value) = super::host::players::load_field(
                     world,
                     client,
@@ -1012,18 +1044,20 @@ fn instruction(
                 thread.stack.push(value);
                 return Ok(());
             }
-            if let Some(actor) = super::host::actors::actor_of(world, id)
+            if let EngineFields::Actor(actor) = engine
                 && let Some(value) =
                     super::host::actors::load_field(world, actor, &program.symbols[field as usize])
             {
                 thread.stack.push(value);
                 return Ok(());
             }
-            if let Some(value) = super::host::mechanics::load_slide_field(
-                world,
-                id,
-                &program.symbols[field as usize],
-            ) {
+            if engine != EngineFields::None
+                && let Some(value) = super::host::mechanics::load_slide_field(
+                    world,
+                    id,
+                    &program.symbols[field as usize],
+                )
+            {
                 thread.stack.push(value);
                 return Ok(());
             }
@@ -1048,7 +1082,8 @@ fn instruction(
             if usage::enabled() {
                 note_field(world, program, id, field, true);
             }
-            if let Some(client) = world.resource::<Runtime>().player_client(id)
+            let engine = engine_fields(world, id);
+            if let EngineFields::Player(client) = engine
                 && super::host::players::store_field(
                     world,
                     client,
@@ -1058,7 +1093,7 @@ fn instruction(
             {
                 return Ok(());
             }
-            if let Some(actor) = super::host::actors::actor_of(world, id)
+            if let EngineFields::Actor(actor) = engine
                 && super::host::actors::store_field(
                     world,
                     actor,
@@ -1068,12 +1103,14 @@ fn instruction(
             {
                 return Ok(());
             }
-            if super::host::mechanics::store_slide_field(
-                world,
-                id,
-                &program.symbols[field as usize],
-                &value,
-            )? {
+            if engine != EngineFields::None
+                && super::host::mechanics::store_slide_field(
+                    world,
+                    id,
+                    &program.symbols[field as usize],
+                    &value,
+                )?
+            {
                 return Ok(());
             }
             super::host::hud::store_field(world, id, &program.symbols[field as usize], &value)?;
@@ -1126,12 +1163,15 @@ fn instruction(
             let receiver = event_receiver(pop(thread)?)?;
             let frame = thread.frames.len() - 1;
             thread.frames[frame].endons = true;
-            world.resource_mut::<Runtime>().waiters.push(Waiter {
-                receiver,
-                name,
-                thread: thread.serial,
-                kind: WaiterKind::Endon { frame },
-            });
+            push_waiter(
+                world,
+                Waiter {
+                    receiver,
+                    name,
+                    thread: thread.serial,
+                    kind: WaiterKind::Endon { frame },
+                },
+            );
         }
         Op::Return => {
             let value = pop(thread)?;
@@ -1184,20 +1224,70 @@ fn register(
     kind: WaiterKind,
 ) {
     thread.state = ThreadState::Awaiting;
-    world.resource_mut::<Runtime>().waiters.push(Waiter {
-        receiver,
-        name,
-        thread: thread.serial,
-        kind,
-    });
+    push_waiter(
+        world,
+        Waiter {
+            receiver,
+            name,
+            thread: thread.serial,
+            kind,
+        },
+    );
+}
+
+fn push_waiter(world: &mut World, waiter: Waiter) {
+    let mut runtime = world.resource_mut::<Runtime>();
+    if waits_on_deleted(&runtime, &waiter) {
+        runtime.doom_epoch += 1;
+    }
+    runtime.waiters.push(waiter);
+}
+
+/// Serial → thread entity. A hint, not a source of truth: an entry is
+/// checked against the entity it names and a miss falls back to the scan
+/// (copied worlds start without it). Resuming a thread scanned every thread
+/// entity, which made a busy tick quadratic in the thread count.
+#[derive(bevy_ecs::prelude::Resource, Default)]
+pub(crate) struct ThreadIndex(std::collections::HashMap<u64, Entity>);
+
+fn spawn_thread_entity(world: &mut World, thread: Thread) {
+    let serial = thread.serial;
+    let entity = world.spawn(thread).id();
+    world
+        .get_resource_or_insert_with(ThreadIndex::default)
+        .0
+        .insert(serial, entity);
+}
+
+fn despawn_thread_entity(world: &mut World, entity: Entity, serial: u64) {
+    world.despawn(entity);
+    if let Some(mut index) = world.get_resource_mut::<ThreadIndex>() {
+        index.0.remove(&serial);
+    }
 }
 
 fn find_thread(world: &mut World, serial: u64) -> Option<Entity> {
-    world
+    if let Some(entity) = world
+        .get_resource::<ThreadIndex>()
+        .and_then(|index| index.0.get(&serial).copied())
+        && world
+            .get::<Thread>(entity)
+            .is_some_and(|thread| thread.serial == serial)
+    {
+        return Some(entity);
+    }
+    let found = world
         .query::<(Entity, &Thread)>()
         .iter(world)
         .find(|(_, t)| t.serial == serial)
-        .map(|(e, _)| e)
+        .map(|(e, _)| e);
+    if let Some(entity) = found {
+        world
+            .get_resource_or_insert_with(ThreadIndex::default)
+            .0
+            .insert(serial, entity);
+    }
+    found
 }
 
 fn with_thread<R>(
@@ -1213,7 +1303,7 @@ fn with_thread<R>(
     let mut thread = world.entity_mut(entity).take::<Thread>().unwrap();
     let result = f(world, &mut thread, false);
     if thread.state == ThreadState::Complete {
-        world.despawn(entity);
+        despawn_thread_entity(world, entity, serial);
     } else {
         world.entity_mut(entity).insert(thread);
     }
@@ -1363,7 +1453,7 @@ fn notify(
 }
 
 fn kill(world: &mut World, entity: Entity, serial: u64) {
-    world.despawn(entity);
+    despawn_thread_entity(world, entity, serial);
     retire(&mut world.resource_mut::<Runtime>(), serial);
 }
 
@@ -1398,9 +1488,16 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     world.resource_mut::<Runtime>().last_tick = Some(tick);
     let now = i64::from(tick.0) * i64::from(crate::MATCH_TICK_MS);
     let started = usage::stats_enabled().then(std::time::Instant::now);
+    let started_cpu = started.map(|_| crate::step::step_stats::cpu_now());
     super::host::mechanics::deliver_finished(world);
     deliver_external(world, now);
     let doomed = doomed_threads(world);
+    let lap = |name: &'static str, from: Option<std::time::Instant>| {
+        from.map(|from| {
+            usage::hitch_phase(name, from.elapsed().as_nanos() as u64);
+            std::time::Instant::now()
+        })
+    };
     let dead: Vec<_> = if doomed.is_empty() {
         Vec::new()
     } else {
@@ -1414,6 +1511,9 @@ pub(crate) fn advance_scheduler(world: &mut World) {
     for (entity, serial) in dead {
         kill(world, entity, serial);
     }
+    // Every thread waiting on a deleted entity is gone; until the epoch moves,
+    // no resumption below needs the per-thread wait-list scan.
+    let swept = world.resource::<Runtime>().doom_epoch;
     {
         let mut runtime = world.resource_mut::<Runtime>();
         let due: Vec<_> = runtime.buckets.range(..=now).map(|(k, _)| *k).collect();
@@ -1426,7 +1526,9 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         }
         runtime.buckets.insert(now, current);
     }
-    run_ready(world, &program, now);
+    let mark = lap("pre", started);
+    run_ready_swept(world, &program, now, Some(swept));
+    let mark = lap("run", mark);
     let deletes = std::mem::take(&mut world.resource_mut::<Runtime>().pending_deletes);
     for object in deletes {
         world.resource_mut::<Runtime>().delete_entity(object);
@@ -1441,25 +1543,43 @@ pub(crate) fn advance_scheduler(world: &mut World) {
         runtime.buckets.remove(&now);
     }
     runtime.loading = !runtime.player_entries.is_empty();
+    lap("deletes", mark);
     let collecting = started.map(|_| std::time::Instant::now());
     collect_heap(world);
     if let (Some(started), Some(collecting)) = (started, collecting) {
         let run_ns = (collecting - started).as_nanos() as u64;
         let heap_ns = collecting.elapsed().as_nanos() as u64;
+        usage::hitch_phase("heap", heap_ns);
+        let cpu_ns = started_cpu.map_or(0, |cpu| crate::step::step_stats::cpu_now() - cpu);
+        usage::hitch_end(now, run_ns + heap_ns, cpu_ns, |f| {
+            let l = &program.functions[f].location;
+            format!("{}::{}", l.module, l.function)
+        });
         let threads = world.query::<&Thread>().iter(world).count();
         let runtime = world.resource::<Runtime>();
-        usage::tick(now, run_ns, heap_ns, || usage::Census {
+        usage::tick(now, run_ns, heap_ns, cpu_ns, || usage::Census {
             threads,
             waiters: runtime.waiters.len(),
             objects: runtime.objects.len(),
             arrays: runtime.arrays.len(),
             queued: runtime.buckets.values().map(VecDeque::len).sum(),
             errors: runtime.errors.values().sum(),
+            entities: runtime.entities.len(),
+            presences: runtime
+                .entities
+                .values()
+                .filter(|e| e.presence.is_some())
+                .count(),
         });
     }
 }
 
 fn run_ready(world: &mut World, program: &Program, now: i64) {
+    run_ready_swept(world, program, now, None);
+}
+
+/// `swept`: the doom epoch at which no waiter waited on a deleted entity.
+fn run_ready_swept(world: &mut World, program: &Program, now: i64, swept: Option<u64>) {
     loop {
         let next = world
             .resource_mut::<Runtime>()
@@ -1472,14 +1592,29 @@ fn run_ready(world: &mut World, program: &Program, now: i64) {
         let Some(entity) = find_thread(world, serial) else {
             continue;
         };
-        if thread_doomed(world, serial) {
+        if swept.is_none_or(|epoch| world.resource::<Runtime>().doom_epoch != epoch)
+            && thread_doomed(world, serial)
+        {
             kill(world, entity, serial);
             continue;
         }
         let mut thread = world.entity_mut(entity).take::<Thread>().unwrap();
         thread.state = ThreadState::Runnable;
         world.resource_mut::<Runtime>().budget = INSTRUCTION_BUDGET;
+        let resumed = usage::stats_enabled().then(|| {
+            let frame = thread.frames.last().map_or(0, |f| f.function);
+            (std::time::Instant::now(), frame)
+        });
         execute(world, program, &mut thread, now);
+        if let Some((resumed, function)) = resumed {
+            usage::hitch_resume(
+                || {
+                    let l = &program.functions[function].location;
+                    format!("{}::{}", l.module, l.function)
+                },
+                resumed.elapsed().as_nanos() as u64,
+            );
+        }
         if thread.state == ThreadState::Complete {
             kill(world, entity, serial);
         } else {
@@ -1496,17 +1631,49 @@ fn run_ready(world: &mut World, program: &Program, now: i64) {
 /// the instruction budget, reporting on every pass.
 const SLICE_ERROR_LIMIT: u32 = 1000;
 
+/// Ops that never run script nor read the instruction budget: the budget
+/// stays in a local across them instead of in the `Runtime` resource (two
+/// resource lookups per instruction).
+fn local_op(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Constant(_)
+            | Op::Global(_)
+            | Op::Load(_)
+            | Op::Store(_)
+            | Op::Pop
+            | Op::Unary(_)
+            | Op::Binary(_)
+            | Op::Vector
+            | Op::Jump(_)
+            | Op::JumpFalse(_)
+            | Op::Dup
+            | Op::DupPair
+            | Op::Size
+            | Op::LoadIndex
+            | Op::LoadField(_)
+            | Op::EnsureLocalArray(_)
+    )
+}
+
 pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread, now: i64) {
     let mut slice_errors = 0u32;
+    // The runtime's budget, held here between non-local ops; it is written
+    // back before anything that may nest a script run and when this returns.
+    let mut budget = world.resource::<Runtime>().budget;
+    let stats = usage::stats_enabled();
     while thread.state == ThreadState::Runnable {
         let frame = thread.frames.last().unwrap();
+        if stats {
+            usage::count_op(frame.function);
+        }
         let function = &program.functions[frame.function];
         // The location is only read on failure; cloning it (two strings) per
         // instruction was most of the interpreter's own cost.
-        let Some((location, op)) = function
+        let Some((location, source)) = function
             .code
             .get(frame.pc)
-            .map(|(location, op)| (location, op.clone()))
+            .map(|(location, op)| (location, op))
         else {
             world.resource_mut::<Runtime>().fault = Some(Fault::at(
                 &function.location,
@@ -1514,19 +1681,22 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
             ));
             break;
         };
-        let exhausted = world.resource::<Runtime>().budget == 0;
-        let (pops, pushes) = stack_effect(&op);
-        let iterates = matches!(op, Op::ArrayKeys);
-        // A waittill that cannot register (undefined receiver or name) would let
-        // the thread run on as if notified; a loop around it then never yields.
-        let blocks = matches!(op, Op::Await(_) | Op::AwaitMatch(_));
+        let op = source.clone();
+        let exhausted = budget == 0;
         let before = thread.stack.len();
         let result = if exhausted {
             Err("potential infinite loop in script - killing thread".into())
         } else {
-            world.resource_mut::<Runtime>().budget -= 1;
+            budget -= 1;
             thread.frames.last_mut().unwrap().pc += 1;
-            instruction(world, program, thread, op, now)
+            if local_op(&op) {
+                instruction(world, program, thread, op, now)
+            } else {
+                world.resource_mut::<Runtime>().budget = budget;
+                let result = instruction(world, program, thread, op, now);
+                budget = world.resource::<Runtime>().budget;
+                result
+            }
         };
         let Err(message) = result else {
             continue;
@@ -1534,6 +1704,13 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
         if world.resource::<Runtime>().fault.is_some() {
             break;
         }
+        // Only a failure needs the op's shape (read from the program, not per
+        // instruction).
+        let (pops, pushes) = stack_effect(source);
+        let iterates = matches!(source, Op::ArrayKeys);
+        // A waittill that cannot register (undefined receiver or name) would let
+        // the thread run on as if notified; a loop around it then never yields.
+        let blocks = matches!(source, Op::Await(_) | Op::AwaitMatch(_));
         let mut fault = Fault::at(location, message);
         fault.callers = thread
             .frames
@@ -1562,7 +1739,7 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
         if exhausted || blocks || slice_errors >= SLICE_ERROR_LIMIT {
             let serial = thread.serial;
             let mut runtime = world.resource_mut::<Runtime>();
-            runtime.budget = INSTRUCTION_BUDGET;
+            budget = INSTRUCTION_BUDGET;
             runtime.waiters.retain(|w| w.thread != serial);
             thread.frames.clear();
             thread.stack.clear();
@@ -1590,6 +1767,29 @@ pub(super) fn execute(world: &mut World, program: &Program, thread: &mut Thread,
                 }
             }
         }
+    }
+    world.resource_mut::<Runtime>().budget = budget;
+}
+
+/// Which engine-side field handlers an object's field reads and writes go
+/// through: a player's, an actor's, or (any entity) the slide velocity.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EngineFields {
+    None,
+    Entity,
+    Player(u32),
+    Actor(crate::actor::ActorId),
+}
+
+fn engine_fields(world: &World, id: u64) -> EngineFields {
+    use super::host::entities::EntityKind;
+    match world.resource::<Runtime>().entities.get(&id) {
+        None => EngineFields::None,
+        Some(entity) => match entity.kind {
+            EntityKind::Player => EngineFields::Player(entity.number as u32),
+            EntityKind::Actor(actor) => EngineFields::Actor(actor),
+            _ => EngineFields::Entity,
+        },
     }
 }
 
@@ -1715,7 +1915,7 @@ fn allocate_array(world: &mut World) -> Result<Value, String> {
     let mut runtime = world.resource_mut::<Runtime>();
     let id = runtime.next_object;
     runtime.next_object = id.checked_add(1).ok_or("object identifier exhausted")?;
-    runtime.arrays.insert(id, BTreeMap::new());
+    runtime.arrays.insert(id, crate::script::ScriptArray::new());
     Ok(Value::Array(id))
 }
 
@@ -1747,6 +1947,17 @@ fn copy_value(world: &mut World, value: Value) -> Result<Value, String> {
         let Value::Array(new_id) = result else {
             unreachable!()
         };
+        // No nested arrays (the common case): the cloned map is the copy.
+        if !entries
+            .values()
+            .any(|value| matches!(value, Value::Array(_)))
+        {
+            world
+                .resource_mut::<Runtime>()
+                .arrays
+                .insert(new_id, entries);
+            return Ok(result);
+        }
         for (key, value) in entries {
             let value = copy(world, value, depth + 1, remaining)?;
             world
@@ -1829,7 +2040,29 @@ impl Runtime {
 /// Mark and sweep over reference ids. Values are not cloned while marking:
 /// copying every reachable value (and bumping its strings) every tick was
 /// most of the collector's cost.
+/// Ticks between heap collections, and the allocations that bring one
+/// forward. Collecting is a full mark over every root and reachable value
+/// (~1–4 ms on a Spec Ops level) and garbage is only memory until then: an
+/// unreachable value cannot be reached by a script, so when it is reclaimed
+/// is not observable. The schedule depends on the tick count and on
+/// allocation counts only, so replays and clones collect on the same ticks.
+const HEAP_COLLECT_TICKS: u32 = 10;
+const HEAP_COLLECT_ALLOCATIONS: u64 = 8192;
+
 fn collect_heap(world: &mut World) {
+    let mut runtime = world.resource_mut::<Runtime>();
+    runtime.heap_ticks += 1;
+    if runtime.heap_ticks < HEAP_COLLECT_TICKS
+        && runtime.next_object.wrapping_sub(runtime.heap_mark) < HEAP_COLLECT_ALLOCATIONS
+    {
+        return;
+    }
+    runtime.heap_ticks = 0;
+    runtime.heap_mark = runtime.next_object;
+    crate::step::step_stats::hot(5, || collect_heap_inner(world))
+}
+
+fn collect_heap_inner(world: &mut World) {
     use std::collections::HashSet;
     use std::hash::{BuildHasherDefault, Hasher};
     /// Object ids are sequential integers; one multiply spreads them.

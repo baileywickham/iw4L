@@ -286,8 +286,8 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
             .keys()
             .rev()
             .map(|key| match key {
-                ArrayKey::Integer(i) => Value::Int(*i),
-                ArrayKey::String(s) => Value::String(s.clone()),
+                ArrayKey::Integer(i) => Value::Int(i),
+                ArrayKey::String(s) => Value::String(s),
             })
             .collect();
         new_array(world, keys)

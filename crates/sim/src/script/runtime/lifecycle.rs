@@ -33,6 +33,7 @@ pub(crate) fn reset(world: &mut World) {
     for id in ids {
         world.despawn(id);
     }
+    world.insert_resource(super::ThreadIndex::default());
     world.insert_resource(Runtime::default());
     world.insert_resource(host::mechanics::Mechanics::default());
     world.insert_resource(crate::actor::ActorPool::default());

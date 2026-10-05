@@ -1151,6 +1151,14 @@ pub(crate) fn phase_trace(
     tick: Tick,
     emissions: &[Emission],
 ) -> TracePhaseOutput {
+    crate::step::step_stats::hot(10, || phase_trace_inner(world, tick, emissions))
+}
+
+fn phase_trace_inner(
+    world: &mut FrameWorld,
+    tick: Tick,
+    emissions: &[Emission],
+) -> TracePhaseOutput {
     let mut output = TracePhaseOutput::default();
     let mut pending: std::collections::VecDeque<_> =
         emissions.iter().copied().map(|em| (em, 0u8)).collect();
@@ -1158,16 +1166,22 @@ pub(crate) fn phase_trace(
         let Some(facts) = world.combat_facts_for(em.weapon) else {
             continue;
         };
-        let query = match em.attacker {
+        let mut query = crate::step::step_stats::hot(8, || match em.attacker {
             Attacker::Client(client) => world.lagcomp_query_for(client, tick),
             Attacker::Entity(_) => world.current_query(tick),
-        };
+        });
         let attacker_number = attacker_number(world, em.attacker);
         let end = [
             em.origin[0] + em.direction[0] * em.max_range,
             em.origin[1] + em.direction[1] * em.max_range,
             em.origin[2] + em.direction[2] * em.max_range,
         ];
+        // Only models this emission's ray can reach: every trace step of
+        // the bullet tested every model's bounds again (a shotgun blast
+        // re-scanned the level's models per pellet per penetration step).
+        query.entities.rows.retain(|geom| {
+            crate::bullet_collision::geom_may_meet_ray(geom, world.clip_cmodels(), em.origin, end)
+        });
         let pen = world.bullet_pen_facts_for(em.weapon);
         let glass_damage = RefCell::new(
             world
@@ -1194,34 +1208,36 @@ pub(crate) fn phase_trace(
             let cur = map.entry(pane).or_insert(0);
             *cur = glass_add_damage(*cur, scaled);
         };
-        let (segments, terminal) = bullet_trace_segments_filtered(
-            world.clip_brushes(),
-            world.clip_bsp(),
-            world.clip_cmodels(),
-            world.clip_mesh(),
-            &query.players.poses,
-            &query.entities.rows,
-            &BulletTraceQuery {
-                start: em.origin,
-                end,
-                mask: MASK_BULLET_WORLD,
-                ignore: em.attacker.client(),
-                ignore_hit: None,
-                ignore_model: em.attacker.entity(),
-            },
-            pen,
-            world.penetration_table(),
-            &|piece| {
-                glass_piece_is_solid(
-                    glass_damage
-                        .borrow()
-                        .get(&(u32::from(piece)))
-                        .copied()
-                        .unwrap_or(0),
-                )
-            },
-            Some(&on_glass_hit),
-        );
+        let (segments, terminal) = crate::step::step_stats::hot(9, || {
+            bullet_trace_segments_filtered(
+                world.clip_brushes(),
+                world.clip_bsp(),
+                world.clip_cmodels(),
+                world.clip_mesh(),
+                &query.players.poses,
+                &query.entities.rows,
+                &BulletTraceQuery {
+                    start: em.origin,
+                    end,
+                    mask: MASK_BULLET_WORLD,
+                    ignore: em.attacker.client(),
+                    ignore_hit: None,
+                    ignore_model: em.attacker.entity(),
+                },
+                pen,
+                world.penetration_table(),
+                &|piece| {
+                    glass_piece_is_solid(
+                        glass_damage
+                            .borrow()
+                            .get(&(u32::from(piece)))
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                },
+                Some(&on_glass_hit),
+            )
+        });
         if bounces < 8
             && facts.weap_type == weapon_iw4::WEAPTYPE_BULLET
             && facts.weap_class != weapon_iw4::WEAPCLASS_SPREAD

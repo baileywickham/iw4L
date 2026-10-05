@@ -209,7 +209,8 @@ pub fn apply_prepared_match(
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
             if let (Some(name), Ok(text)) = (
-                path.file_stem().filter(|_| path.extension().is_some_and(|e| e == "atr")),
+                path.file_stem()
+                    .filter(|_| path.extension().is_some_and(|e| e == "atr")),
                 std::fs::read_to_string(&path),
             ) {
                 animtrees.push((name.to_string_lossy().into_owned(), text));
@@ -1139,14 +1140,23 @@ fn preflight_match_install(
             (startup.roots, startup.entries, sim::script::Catalog::iw4())
         }
     };
-    let roots: Vec<&str> = startup_roots.iter().map(String::as_str).collect();
+    let mut roots: Vec<&str> = startup_roots.iter().map(String::as_str).collect();
     let stub_natives = std::env::var("IW4L_GSC_STUB_NATIVES").is_ok_and(|value| value == "1");
-    let scripts = sim::script::Program::load(
-        &sources,
-        &roots,
-        &script_catalog.with_native_stubs(stub_natives),
-    )
-    .map_err(|e| script_refusal(zone, gametype, "compile", &e))?;
+    let script_catalog = script_catalog.with_native_stubs(stub_natives);
+    // Traverse animscripts are roots only because the engine names them; one
+    // the zones ship broken (unused by the game, e.g. `stairs_down`) is dropped.
+    let scripts = loop {
+        match sim::script::Program::load(&sources, &roots, &script_catalog) {
+            Err(e)
+                if e.location.module.starts_with("animscripts/traverse/")
+                    && roots.contains(&e.location.module.as_str()) =>
+            {
+                diag::warn!(Sim, "gsc: traverse script dropped: {e}");
+                roots.retain(|root| *root != e.location.module);
+            }
+            result => break result.map_err(|e| script_refusal(zone, gametype, "compile", &e))?,
+        }
+    };
     let config = sources
         .0
         .config(MATCH_CONFIG)

@@ -2,6 +2,7 @@ pub(crate) mod actor_combat;
 pub(crate) mod actor_cover;
 pub(crate) mod actor_events;
 pub(crate) mod actor_grenade;
+pub(crate) mod actor_motion;
 pub(crate) mod actor_nav;
 pub(crate) mod autoaim;
 pub(crate) mod actors;

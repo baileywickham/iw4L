@@ -1,3 +1,4 @@
+mod array;
 mod compiler;
 mod error;
 pub mod host;
@@ -54,6 +55,7 @@ pub(crate) use runtime::{
     take_signals,
 };
 pub use source::{FileSources, SourceOrigin, SourceResolver, decode_source, normalize_module};
+pub(crate) use array::ScriptArray;
 pub(crate) use value::ArrayKey;
 pub use value::{ScriptString, Value};
 pub(crate) use vm::state::{Frame, Thread, ThreadState, Waiter, WaiterKind};

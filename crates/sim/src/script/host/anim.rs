@@ -23,19 +23,29 @@ const DEFAULT_BLEND: f32 = 0.2;
 /// A script entity's animtree instance: the shared definition, the per-node
 /// goal weights/times in an `XAnimTreeRuntime` (the state a snapshot carries)
 /// and the notify name each flagged node reports its notetracks under.
+///
+/// `live` lists (ascending) the nodes whose state is not the default; every
+/// other node is idle, and the per-tick walks visit `live` only (an actor's
+/// `generic_human` tree has ~3,600 nodes, a handful of them weighted).
 #[derive(Clone, Debug)]
 pub(crate) struct EntityAnim {
     tree: Arc<ScriptAnimTree>,
     runtime: XAnimTreeRuntime,
     flags: Vec<Option<Arc<str>>>,
+    live: Vec<u16>,
 }
 
 impl EntityAnim {
     pub(crate) fn new(tree: Arc<ScriptAnimTree>) -> Self {
+        let runtime = XAnimTreeRuntime::new(Arc::clone(&tree.definition));
+        let live = (0..runtime.states().len() as u16)
+            .filter(|node| runtime.states()[*node as usize] != XAnimNodeState::default())
+            .collect();
         Self {
-            runtime: XAnimTreeRuntime::new(Arc::clone(&tree.definition)),
+            runtime,
             flags: vec![None; tree.nodes.len()],
             tree,
+            live,
         }
     }
 
@@ -46,7 +56,18 @@ impl EntityAnim {
     fn put(&mut self, node: u16, state: XAnimNodeState) -> Result<(), String> {
         self.runtime
             .set_state(XAnimNodeId(node), state)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        match (
+            self.live.binary_search(&node),
+            state == XAnimNodeState::default(),
+        ) {
+            (Ok(at), true) => {
+                self.live.remove(at);
+            }
+            (Err(at), false) => self.live.insert(at, node),
+            _ => {}
+        }
+        Ok(())
     }
 
     fn set_goal(&mut self, node: u16, weight: f32, time: f32) -> Result<(), String> {
@@ -146,9 +167,10 @@ impl EntityAnim {
 
     fn advance(&mut self, dtime: f32, notes: &mut Vec<(Arc<str>, Arc<str>)>) -> Result<(), String> {
         self.runtime
-            .update_inherited_rate(dtime)
+            .update_inherited_rate_listed(dtime, &self.live)
             .map_err(|e| e.to_string())?;
-        for node in 0..self.tree.nodes.len() as u16 {
+        for at in 0..self.live.len() {
+            let node = self.live[at];
             let state = self.state(node);
             if state.weight != 0.0
                 && state.time < 1.0
@@ -183,15 +205,18 @@ impl EntityAnim {
     /// weight (the rest stays default and costs no wire bytes), so an
     /// unchanged pose compares equal from tick to tick.
     fn active_pose(&self) -> Result<Option<(Vec<XAnimSemanticNode>, XAnimTreeRuntime)>, String> {
+        // Idle nodes (not in `live`) have no weight, so they are never on.
         let states = self.runtime.states();
         let defs = self.tree.definition.nodes();
         let mut on = vec![false; defs.len()];
-        for node in 0..defs.len() {
+        for &node in &self.live {
+            let node = node as usize;
             on[node] = states[node].weight > 0.0
                 && defs[node].parent.is_none_or(|parent| on[parent.0 as usize]);
         }
         let mut keep = vec![false; defs.len()];
-        for node in (0..defs.len()).rev() {
+        for &node in self.live.iter().rev() {
+            let node = node as usize;
             keep[node] =
                 on[node] && (keep[node] || matches!(defs[node].kind, XAnimNodeKind::Leaf { .. }));
             if let (true, Some(parent)) = (keep[node], defs[node].parent) {
@@ -201,7 +226,13 @@ impl EntityAnim {
         let mut remap = vec![u16::MAX; defs.len()];
         let mut nodes = Vec::new();
         let mut definition = Vec::new();
-        for node in (0..defs.len()).filter(|node| keep[*node]) {
+        let kept: Vec<usize> = self
+            .live
+            .iter()
+            .map(|node| *node as usize)
+            .filter(|node| keep[*node])
+            .collect();
+        for node in kept {
             remap[node] = nodes.len() as u16;
             let parent = defs[node]
                 .parent
@@ -245,26 +276,65 @@ impl EntityAnim {
         Ok(Some((nodes, runtime)))
     }
 
-    /// Root translation the tree's dominant anim moved through this step, in
-    /// model space (a loop that wrapped adds the lap's end and start).
-    fn root_delta(&self) -> [f32; 3] {
-        let Some(leaf) = self.dominant_leaf(0) else {
-            return [0.0; 3];
-        };
-        let Some(clip) = self.tree.clip(leaf) else {
-            return [0.0; 3];
-        };
-        let state = self.state(leaf);
-        let span = |a: f32, b: f32| {
-            let (from, to) = (clip.abs_delta_trans(a), clip.abs_delta_trans(b));
-            [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
-        };
-        if state.time >= state.old_time {
-            span(state.old_time, state.time)
-        } else {
-            let (lap, rest) = (span(state.old_time, 1.0), span(0.0, state.time));
-            [lap[0] + rest[0], lap[1] + rest[1], lap[2] + rest[2]]
+    /// Root motion this step (`XAnimCalcDelta`): every weighted leaf's root
+    /// translation and yaw between its old and new time, in the model frame at
+    /// the start of the step, blended by weights normalized at each blend node.
+    /// Additive layers carry no root motion.
+    pub(crate) fn motion_delta(&self) -> crate::actor::AnimDelta {
+        let states = self.runtime.states();
+        let defs = self.tree.definition.nodes();
+        let mut out = crate::actor::AnimDelta::default();
+        let mut best: Option<(f32, u16)> = None;
+        let mut stack = vec![(0u16, 1.0f32)];
+        while let Some((node, weight)) = stack.pop() {
+            match &defs[node as usize].kind {
+                XAnimNodeKind::Additive => {}
+                XAnimNodeKind::Leaf { clip, .. } => {
+                    let (trans, yaw) = leaf_delta(clip, &states[node as usize]);
+                    for (o, t) in out.trans.iter_mut().zip(trans) {
+                        *o += t * weight;
+                    }
+                    out.yaw += yaw * weight;
+                    if best.is_none_or(|(w, _)| weight > w) {
+                        best = Some((weight, node));
+                    }
+                }
+                XAnimNodeKind::Blend => {
+                    let children = self.tree.nodes[node as usize].children.clone();
+                    let sum: f32 = children
+                        .clone()
+                        .map(|child| states[child as usize].weight.max(0.0))
+                        .sum();
+                    if sum <= 0.0 {
+                        continue;
+                    }
+                    for child in children.rev() {
+                        let w = states[child as usize].weight;
+                        if w > 0.0 {
+                            stack.push((child, weight * w / sum));
+                        }
+                    }
+                }
+            }
         }
+        out.leaf = best.map(|(_, leaf)| Arc::clone(&self.tree.nodes[leaf as usize].name));
+        out
+    }
+
+    /// The dominant anim's root translation still to play (model frame at its
+    /// current time) and the seconds that takes at its rate.
+    pub(crate) fn remaining_root(&self) -> Option<([f32; 3], f32)> {
+        let leaf = self.dominant_leaf(0)?;
+        let clip = self.tree.clip(leaf)?;
+        let state = self.state(leaf);
+        if clip.looping || state.rate <= 0.0 {
+            return None;
+        }
+        let trans = rotate_yaw(
+            sub3(clip.abs_delta_trans(1.0), clip.abs_delta_trans(state.time)),
+            -clip.abs_delta_yaw(state.time),
+        );
+        Some((trans, (1.0 - state.time) * clip.duration() / state.rate))
     }
 
     fn dominant_leaf(&self, node: u16) -> Option<u16> {
@@ -295,25 +365,35 @@ impl EntityAnim {
         best.map(|(_, id)| id)
     }
 
+    /// Resets every node that is neither weighted (now or as a goal) nor above
+    /// one that is. Only non-default nodes can need it, and only weighted
+    /// nodes (all in `live`) make their ancestors stay.
     fn free_idle_nodes(&mut self) -> Result<(), String> {
-        let count = self.tree.nodes.len();
-        let mut live = vec![false; count];
-        for node in (0..count).rev() {
-            let state = self.runtime.states()[node];
-            live[node] = state.weight != 0.0
-                || state.goal_weight != 0.0
-                || self.tree.nodes[node]
-                    .children
-                    .clone()
-                    .any(|child| live[child as usize]);
-        }
-        for (node, live) in live.into_iter().enumerate() {
-            let state = self.runtime.states()[node];
-            if !live && state != XAnimNodeState::default() {
-                self.put(node as u16, XAnimNodeState::default())?;
-                self.flags[node] = None;
+        let mut used = vec![false; self.tree.nodes.len()];
+        for &node in &self.live {
+            let state = self.runtime.states()[node as usize];
+            if state.weight == 0.0 && state.goal_weight == 0.0 {
+                continue;
+            }
+            let mut at = Some(node);
+            while let Some(id) = at {
+                if std::mem::replace(&mut used[id as usize], true) {
+                    break;
+                }
+                at = self.tree.nodes[id as usize].parent;
             }
         }
+        // Reset in place and drop them from `live` in one pass (a cleared
+        // subtree can leave thousands; removing them one by one is quadratic).
+        for &node in &self.live {
+            if !used[node as usize] {
+                self.runtime
+                    .set_state(XAnimNodeId(node), XAnimNodeState::default())
+                    .map_err(|e| e.to_string())?;
+                self.flags[node as usize] = None;
+            }
+        }
+        self.live.retain(|node| used[*node as usize]);
         Ok(())
     }
 }
@@ -372,7 +452,11 @@ fn crossed(clip: &AnimClip, state: &XAnimNodeState, mut deliver: impl FnMut(&str
 }
 
 pub(crate) fn advance_anims(world: &mut World, dtime: f32) {
-    let mut moved = Vec::new();
+    crate::step::step_stats::hot(3, || advance_anims_inner(world, dtime))
+}
+
+fn advance_anims_inner(world: &mut World, dtime: f32) {
+    let mut deltas = Vec::new();
     world.resource_scope::<Mechanics, _>(|world, mut mechanics| {
         if mechanics.anims.is_empty() {
             return;
@@ -393,22 +477,48 @@ pub(crate) fn advance_anims(world: &mut World, dtime: f32) {
             if let Err(error) = anim.advance(dtime, &mut notes) {
                 diag::warn!(Sim, "gsc: animtree {} on entity: {error}", anim.tree.name);
             }
-            if super::actor_nav::follows_root_motion(world, object) {
-                moved.push((object, anim.root_delta()));
+            if let Some(actor) = super::actors::actor_of(world, object) {
+                deltas.push((actor, anim.motion_delta()));
             }
             mechanics
                 .anim_notes
                 .extend(notes.into_iter().map(|(flag, note)| (object, flag, note)));
         }
     });
-    for (object, delta) in moved {
-        super::actor_nav::apply_root_motion(world, object, delta);
+    if world
+        .resource::<crate::actor::ActorPool>()
+        .actors
+        .is_empty()
+    {
+        return;
     }
+    let mut pool = world.resource_mut::<crate::actor::ActorPool>();
+    for actor in pool.actors.values_mut() {
+        actor.anim_delta = crate::actor::AnimDelta::default();
+    }
+    for (id, delta) in deltas {
+        if let Some(actor) = pool.actors.get_mut(&id) {
+            actor.anim_delta = delta;
+        }
+    }
+}
+
+/// The dominant anim's root translation still to play and how long it takes.
+pub(crate) fn remaining_root(world: &World, object: u64) -> Option<([f32; 3], f32)> {
+    world
+        .resource::<Mechanics>()
+        .anims
+        .get(&object)?
+        .remaining_root()
 }
 
 /// Put each animated entity's active tree on its DObj: the snapshot carries
 /// it to clients and the authority poses bullet collision and tags with it.
 pub(crate) fn publish_anims(world: &mut World) {
+    crate::step::step_stats::hot(4, || publish_anims_inner(world))
+}
+
+fn publish_anims_inner(world: &mut World) {
     let runtime = world.resource::<Runtime>();
     let mechanics = world.resource::<Mechanics>();
     let mut poses = Vec::new();
@@ -534,6 +644,45 @@ fn span(args: &[Value], from: usize) -> Result<(f32, f32), String> {
         return Err("animation times must be in [0, 1]".into());
     }
     Ok((start, end))
+}
+
+fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+/// `v` turned by `yaw` degrees about z.
+pub(crate) fn rotate_yaw(v: [f32; 3], yaw: f32) -> [f32; 3] {
+    let (sin, cos) = yaw.to_radians().sin_cos();
+    [v[0] * cos - v[1] * sin, v[0] * sin + v[1] * cos, v[2]]
+}
+
+/// One leaf's root translation (model frame at its old time) and yaw over the
+/// last step; a loop that wrapped adds the lap's end and the new start.
+fn leaf_delta(clip: &AnimClip, state: &XAnimNodeState) -> ([f32; 3], f32) {
+    if !clip.has_delta() && clip.abs_delta_yaw(1.0) == 0.0 {
+        return ([0.0; 3], 0.0);
+    }
+    let local = |a: f32, b: f32| {
+        rotate_yaw(
+            sub3(clip.abs_delta_trans(b), clip.abs_delta_trans(a)),
+            -clip.abs_delta_yaw(a),
+        )
+    };
+    let turn = |a: f32, b: f32| wrap_degrees(clip.abs_delta_yaw(b) - clip.abs_delta_yaw(a));
+    let (old, new) = (state.old_time, state.time);
+    if new >= old {
+        return (local(old, new), turn(old, new));
+    }
+    if !clip.looping {
+        return ([0.0; 3], 0.0);
+    }
+    let lap = turn(old, 1.0);
+    let first = local(old, 1.0);
+    let rest = rotate_yaw(local(0.0, new), lap);
+    (
+        [first[0] + rest[0], first[1] + rest[1], first[2] + rest[2]],
+        wrap_degrees(lap + turn(0.0, new)),
+    )
 }
 
 fn wrap_degrees(angle: f32) -> f32 {

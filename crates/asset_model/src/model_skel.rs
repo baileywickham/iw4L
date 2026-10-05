@@ -116,6 +116,7 @@ impl ModelSkel {
             movement_brushes: self.movement_brushes.clone(),
             bounds: self.bounds,
             radius: self.radius,
+            dobj: Default::default(),
         })
     }
 

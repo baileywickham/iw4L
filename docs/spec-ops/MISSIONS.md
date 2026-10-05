@@ -89,3 +89,17 @@ the dev-only `autoaim` console helper (`crates/console/src/dev_aim.rs`: aims at 
 lobs grenade-launcher rounds, pulses `+attack`, skips targets that take no damage, teleports to a path node that sees one;
 `enemies` lists live hostiles): killspree_favela 2:43.05, killspree_invasion 1:19.65, juggernauts_favela 4:13.95,
 takeover_oilrig 3:08.50, rooftop_contingency 3:22.50, defense_invasion 10:08.75 (RPG pickup, `weapnext` to it for vehicles).
+
+**Hitch pass (2026-10-04, Air):** the GSC column above predates it. The worst script tick after the level entry is now under
+50 ms CPU on favela, showers, snowrace1, hidden and sabotage (before: the first `generic_human` spawn wave, 80–300 ms, and
+55–70 ms shotgun/sniper `shoot` calls). The level-entry tick itself (the first script tick after the player spawns: `_load`,
+createfx, destructibles) dropped 2–5× but is still 90–200 ms CPU on favela, showers and the cliffhanger missions. Sim tick CPU
+p50/p99 roughly halved. Numbers, causes and fixes: `SPEC-OPS-PLAN.md`, "Hitch pass".
+
+| mission | level-entry tick CPU ms | worst later script tick CPU ms (wall) | sim tick CPU p50 / p99 ms | frame p50 / p99 ms |
+|---|---|---|---|---|
+| so_killspree_favela (mid-fight) | 186 → 92 | 112 (122) → none ≥ 50 | 7.6 / 10.8 → 3.7 / 7.0 | 11.3 / 24 → 10.8 / 19 |
+| so_showers_gulag | 644 → 204 | 101 (102) → none | 10.4 / 22.2 → 6.4 / 14.7 | 32.0 / 64 → 28.8 / 53 |
+| so_snowrace1_cliffhanger | 467 → 130 | none → none | 9.0 / 12.8 → 4.3 / 7.8 | 5.9 / 47 → 5.4 / 17 |
+| so_hidden_so_ghillies | < 50 → < 50 | 82 (82) → none | 7.5 / 12.8 → 4.0 / 9.1 | 6.7 / 24 → 6.4 / 19 |
+| so_sabotage_cliffhanger | 768 → 150 | 241 (324) → none | 11.6 / 17.1 → 3.7 / 7.5 | 14.9 / 78 → 12.3 / 20 |

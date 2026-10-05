@@ -371,6 +371,7 @@ impl SimContentBuilder {
 
     pub fn set_script_anims(&mut self, library: crate::script::host::animtree::ScriptAnimLibrary) {
         self.script_anims = Arc::new(library);
+        crate::script::host::animtree::ScriptAnimLibrary::prewarm(&self.script_anims);
     }
 
     pub fn set_player_anim_script(&mut self, script: Option<Arc<PlayerAnimScript>>) {
@@ -1662,7 +1663,28 @@ impl SimState {
         &self,
         keep: impl Fn(&EntityCollisionCapabilities) -> bool,
     ) -> Vec<SimBrush> {
-        let mut brushes = Vec::new();
+        crate::step::step_stats::hot(6, || self.model_movement_brushes_inner(keep))
+    }
+
+    fn model_movement_brushes_inner(
+        &self,
+        keep: impl Fn(&EntityCollisionCapabilities) -> bool,
+    ) -> Vec<SimBrush> {
+        self.model_movement_brush_sets_where(keep)
+            .into_iter()
+            .flat_map(|set| set.into_owned())
+            .collect()
+    }
+
+    /// Each solid model's movement brushes in world space, in row order:
+    /// the set posed at the last materialize when the model has not moved
+    /// since, else posed here. A world trace (FX particles trace hundreds a
+    /// frame) re-posed and copied every brush of every model per call.
+    pub(crate) fn model_movement_brush_sets_where(
+        &self,
+        keep: impl Fn(&EntityCollisionCapabilities) -> bool,
+    ) -> Vec<std::borrow::Cow<'_, [SimBrush]>> {
+        let mut sets = Vec::new();
         for row in self
             .entity_collision_capabilities
             .iter()
@@ -1675,32 +1697,15 @@ impl SimState {
             if capability.movement_brushes.is_empty() {
                 continue;
             }
-            let plane_transform = dobj.world_from_model.inverse().transpose();
-            for brush in &capability.movement_brushes {
-                let planes = brush
-                    .planes
-                    .iter()
-                    .map(|plane| {
-                        let plane = plane_transform
-                            * glam::Vec4::new(plane[0], plane[1], plane[2], -plane[3]);
-                        let length = plane.truncate().length();
-                        [
-                            plane.x / length,
-                            plane.y / length,
-                            plane.z / length,
-                            -plane.w / length,
-                        ]
-                    })
-                    .collect();
-                brushes.push(SimBrush {
-                    planes,
-                    contents: brush.contents,
-                    plane_surface_flags: brush.plane_surface_flags.clone(),
-                    glass_encoded: 0,
-                });
-            }
+            sets.push(match dobj.posed_movement_brushes() {
+                Some(cached) => std::borrow::Cow::Borrowed(cached),
+                None => std::borrow::Cow::Owned(posed_movement_brushes(
+                    capability,
+                    dobj.world_from_model,
+                )),
+            });
         }
-        brushes
+        sets
     }
 
     pub(crate) fn entity_collision_capabilities_mut(
@@ -1896,6 +1901,27 @@ impl SimState {
         ignore_glass: bool,
         exclude: Option<crate::AuthorityModelOwner>,
     ) -> trace_iw4::Trace {
+        crate::step::step_stats::hot(2, || {
+            self.trace_clip_maps_glass_inner(
+                clip_brushes,
+                clip_bsp,
+                clip_mesh,
+                input,
+                ignore_glass,
+                exclude,
+            )
+        })
+    }
+
+    fn trace_clip_maps_glass_inner(
+        &self,
+        clip_brushes: &[SimBrush],
+        clip_bsp: &SimClipBsp,
+        clip_mesh: &SimClipMesh,
+        input: movement_iw4::GroundTraceInput,
+        ignore_glass: bool,
+        exclude: Option<crate::AuthorityModelOwner>,
+    ) -> trace_iw4::Trace {
         let movement_iw4::GroundTraceInput {
             start,
             end,
@@ -1933,11 +1959,10 @@ impl SimState {
                 tracemask: mask,
             },
         );
-        clip_move_to_model_brushes(
-            hit,
-            &self.model_movement_brushes_where(|row| Some(row.owner) != exclude),
-            input,
-        )
+        let sets = crate::step::step_stats::hot(6, || {
+            self.model_movement_brush_sets_where(|row| Some(row.owner) != exclude)
+        });
+        clip_move_to_model_brush_sets(hit, &sets, input)
     }
 
     pub fn collision_history(&self) -> &CollisionHistory {
@@ -3870,6 +3895,69 @@ fn player_controller_input(ps: &PlayerState) -> xmodel_runtime::PlayerController
         crouch: ps.e_flags & playerstate_iw4::eflags::DUCK != 0,
         lean_frac: math_iw4::get_lean_fraction(ps.leanf),
     }
+}
+
+/// A model's movement brushes posed by `world_from_model`.
+pub(crate) fn posed_movement_brushes(
+    capability: &xmodel_runtime::RetainedModelCapability,
+    world_from_model: glam::Mat4,
+) -> Vec<SimBrush> {
+    let plane_transform = world_from_model.inverse().transpose();
+    capability
+        .movement_brushes
+        .iter()
+        .map(|brush| SimBrush {
+            planes: brush
+                .planes
+                .iter()
+                .map(|plane| {
+                    let plane =
+                        plane_transform * glam::Vec4::new(plane[0], plane[1], plane[2], -plane[3]);
+                    let length = plane.truncate().length();
+                    [
+                        plane.x / length,
+                        plane.y / length,
+                        plane.z / length,
+                        -plane.w / length,
+                    ]
+                })
+                .collect(),
+            contents: brush.contents,
+            plane_surface_flags: brush.plane_surface_flags.clone(),
+            glass_encoded: 0,
+        })
+        .collect()
+}
+
+/// `clip_move_to_model_brushes` over brush sets (the same brushes in the
+/// same order as their concatenation).
+pub(crate) fn clip_move_to_model_brush_sets(
+    hit: trace_iw4::Trace,
+    sets: &[std::borrow::Cow<'_, [SimBrush]>],
+    input: movement_iw4::GroundTraceInput,
+) -> trace_iw4::Trace {
+    if hit.fraction == 0.0 || sets.iter().all(|set| set.is_empty()) {
+        return hit;
+    }
+    let mut hit = hit;
+    let other = trace_iw4::trace_capsule(
+        sets.iter()
+            .flat_map(|set| set.iter())
+            .map(clipmap_iw4::brush_ref),
+        input.start,
+        input.end,
+        input.mins,
+        input.maxs,
+        input.tracemask,
+    );
+    let startsolid = hit.startsolid | other.startsolid;
+    let allsolid = hit.allsolid | other.allsolid;
+    if other.fraction < hit.fraction {
+        hit = other;
+    }
+    hit.startsolid = startsolid;
+    hit.allsolid = allsolid;
+    hit
 }
 
 pub(crate) fn clip_move_to_model_brushes(

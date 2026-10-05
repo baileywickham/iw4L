@@ -56,6 +56,27 @@ pub struct RetainedModelCapability {
     pub bounds: Option<([f32; 3], [f32; 3])>,
 
     pub radius: Option<f32>,
+
+    /// This model alone as a DObj, built on first use (posing rebuilt it on
+    /// every tag query and every collision refresh).
+    pub dobj: SingleDObj,
+}
+
+/// A lazily built single-model DObj. A clone starts empty, so a capability
+/// copied and then edited never sees the original's skeleton.
+#[derive(Default)]
+pub struct SingleDObj(std::sync::OnceLock<Result<std::sync::Arc<DObj>, crate::DObjError>>);
+
+impl Clone for SingleDObj {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for SingleDObj {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SingleDObj")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +134,13 @@ impl From<XAnimTreeError> for MaterializeError {
 }
 
 impl RetainedModelCapability {
+    pub fn single_dobj(&self) -> Result<std::sync::Arc<DObj>, crate::DObjError> {
+        self.dobj
+            .0
+            .get_or_init(|| DObj::build(&[(&self.pose, None)]).map(std::sync::Arc::new))
+            .clone()
+    }
+
     pub fn pose(
         &self,
         request: &DObjPoseRequest,
@@ -127,7 +155,7 @@ impl RetainedModelCapability {
         world_from_model: Mat4,
         controller: impl FnOnce(&DObj, &PartBits, &mut [Local]),
     ) -> Result<Vec<Mat4>, MaterializeError> {
-        let dobj = DObj::build(&[(&self.pose, None)])?;
+        let dobj = self.single_dobj()?;
         pose_dobj_with_controller(&dobj, request, world_from_model, controller)
     }
 
@@ -218,11 +246,7 @@ pub fn collision_models_with_controller(
     if models.is_empty() {
         return Ok(Vec::new());
     }
-    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
-        .iter()
-        .map(|(model, attach)| (&model.pose, attach.clone()))
-        .collect();
-    let dobj = DObj::build(&descriptors)?;
+    let dobj = model_set_dobj(models)?;
     collision_dobj_with_controller(&dobj, models, request, world_from_model, controller)
 }
 
@@ -279,6 +303,20 @@ pub fn collision_dobj_with_controller(
     Ok(bones)
 }
 
+/// The DObj for a model set; a lone unattached model uses its cached one.
+fn model_set_dobj(
+    models: &[(&RetainedModelCapability, Option<Attach>)],
+) -> Result<std::sync::Arc<DObj>, crate::DObjError> {
+    if let [(model, None)] = models {
+        return model.single_dobj();
+    }
+    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
+        .iter()
+        .map(|(model, attach)| (&model.pose, attach.clone()))
+        .collect();
+    DObj::build(&descriptors).map(std::sync::Arc::new)
+}
+
 fn geom_collision_models(
     models: &[(&RetainedModelCapability, Option<Attach>)],
     request: &DObjPoseRequest,
@@ -288,11 +326,7 @@ fn geom_collision_models(
     if models.is_empty() {
         return Ok(Vec::new());
     }
-    let descriptors: Vec<(&ModelPoseSrc, Option<Attach>)> = models
-        .iter()
-        .map(|(model, attach)| (&model.pose, attach.clone()))
-        .collect();
-    let dobj = DObj::build(&descriptors)?;
+    let dobj = model_set_dobj(models)?;
     let posed = pose_dobj_with_controller(&dobj, request, world_from_model, |_, _, _| {})?;
     let mut bones = Vec::new();
     for (slot, (model, _)) in dobj.models.iter().zip(models.iter()) {

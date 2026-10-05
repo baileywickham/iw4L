@@ -29,7 +29,7 @@ fn aitype(classname: &str) -> String {
     format!("aitype/{}", name.strip_prefix("actor_").unwrap_or(&name))
 }
 
-fn has_function(world: &World, name: &str) -> bool {
+pub(crate) fn has_function(world: &World, name: &str) -> bool {
     world
         .resource::<Runtime>()
         .program
@@ -453,7 +453,7 @@ pub(crate) fn animscript_module(world: &World, actor: ActorId, state: &str) -> S
         .actors
         .get(&actor)
         .is_some_and(|a| &*a.species == "dog");
-    if !dog {
+    if !dog || state.starts_with("traverse/") {
         return state.to_owned();
     }
     match state {
@@ -593,7 +593,7 @@ pub(crate) fn run_actors(world: &mut World) {
             let to_goal = ((goal[0] - origin[0]).powi(2) + (goal[1] - origin[1]).powi(2)).sqrt();
             diag::info!(
                 Sim,
-                "actor: entity {number} {} script={} movemode={} at {:.0} {:.0} {:.0} goal {:.0} {:.0} {:.0} node={:?} dist={to_goal:.0} radius={:.0} moved={:.0} path={}/{} enemy={:?} shots={} hits_taken={} health={} animmode={} arrival={} detour={:?}",
+                "actor: entity {number} {} script={} movemode={} at {:.0} {:.0} {:.0} goal {:.0} {:.0} {:.0} node={:?} dist={to_goal:.0} radius={:.0} moved={:.0} path={}/{} enemy={:?} shots={} hits_taken={} health={} animmode={} arrival={} detour={:?} speed={:.0} traverse={}",
                 a.team,
                 a.animscript.as_ref().map_or("none", |(name, _)| name),
                 a.move_mode.name(),
@@ -617,6 +617,8 @@ pub(crate) fn run_actors(world: &mut World) {
                 a.anim_mode,
                 a.arrival.is_some(),
                 a.detour.map(|d| d.kind),
+                (a.velocity[0] * a.velocity[0] + a.velocity[1] * a.velocity[1]).sqrt(),
+                a.traverse.as_ref().map_or("-", |n| &*n.script),
             );
         }
     }

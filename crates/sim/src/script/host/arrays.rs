@@ -20,14 +20,9 @@ pub(crate) fn new_array(world: &mut World, values: Vec<Value>) -> Result<Value, 
     let mut runtime = world.resource_mut::<Runtime>();
     let id = runtime.next_object;
     runtime.next_object = id.checked_add(1).ok_or("object identifier exhausted")?;
-    runtime.arrays.insert(
-        id,
-        values
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| (ArrayKey::Integer(i as i32), v))
-            .collect(),
-    );
+    runtime
+        .arrays
+        .insert(id, crate::script::ScriptArray::from_values(values));
     Ok(Value::Array(id))
 }
 
@@ -50,12 +45,12 @@ pub(crate) fn iteration_key(
         if !array.contains_key(&key) {
             return Err("array key does not exist".into());
         }
-        array.range(..key).next_back()
+        array.key_before(&key)
     } else {
-        array.last_key_value()
+        array.last_key()
     };
-    Ok(entry.map_or(Value::Undefined, |(key, _)| match key {
-        ArrayKey::Integer(n) => Value::Int(*n),
-        ArrayKey::String(s) => Value::String(s.clone()),
+    Ok(entry.map_or(Value::Undefined, |key| match key {
+        ArrayKey::Integer(n) => Value::Int(n),
+        ArrayKey::String(s) => Value::String(s),
     }))
 }

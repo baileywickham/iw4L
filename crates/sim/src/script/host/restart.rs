@@ -63,7 +63,7 @@ pub(crate) fn attach(runtime: &mut Runtime, value: Detached) -> Result<Value, St
             }
             let id = runtime.next_object;
             runtime.next_object = id.checked_add(1).ok_or("object identifier exhausted")?;
-            runtime.arrays.insert(id, array);
+            runtime.arrays.insert(id, array.into_iter().collect());
             Ok(Value::Array(id))
         }
     }

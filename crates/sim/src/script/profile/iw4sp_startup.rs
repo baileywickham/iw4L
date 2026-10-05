@@ -17,8 +17,9 @@ pub struct Iw4SpStartup {
     pub entries: Vec<String>,
 }
 impl Iw4SpStartup {
-    /// `modules` is every script the zones carry; the engine reaches the aitypes
-    /// and the entry animscripts by name, so they are roots when present.
+    /// `modules` is every script the zones carry; the engine reaches the aitypes,
+    /// the entry animscripts and the traverse scripts by name, so they are roots
+    /// when present.
     pub fn new<'a>(map: &str, modules: impl Iterator<Item = &'a str>) -> Self {
         let map = format!("maps/{map}");
         let mut roots = vec![
@@ -29,6 +30,7 @@ impl Iw4SpStartup {
         for module in modules {
             if module.starts_with("aitype/")
                 || module.starts_with("animscripts/dog/")
+                || module.starts_with("animscripts/traverse/")
                 || ENGINE_ANIMSCRIPTS.contains(&module)
             {
                 roots.push(module.to_owned());

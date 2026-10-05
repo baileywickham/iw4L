@@ -943,6 +943,25 @@ pub(crate) fn contains_point(world: &mut World, volume_entity: u64, point: [f32;
     inside.unwrap_or(false)
 }
 
+/// `contains_point` for many points: the volume is resolved once (a goal
+/// volume tested every path node one call at a time).
+pub(crate) fn contains_points(
+    world: &mut World,
+    volume_entity: u64,
+    points: &[[f32; 3]],
+) -> Vec<bool> {
+    let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());
+    let inside = {
+        let frame = FrameWorld::from_world(world);
+        match volume(&mut runtime, &frame, volume_entity) {
+            Some(v) => points.iter().map(|p| v.touches(*p, *p)).collect(),
+            None => vec![false; points.len()],
+        }
+    };
+    *world.resource_mut::<Runtime>() = runtime;
+    inside
+}
+
 /// A trigger's world bounds (none for brush volumes).
 pub(crate) fn world_bounds(world: &mut World, trigger: u64) -> Option<([f32; 3], [f32; 3])> {
     let mut runtime = std::mem::take(&mut *world.resource_mut::<Runtime>());

@@ -415,6 +415,7 @@ impl Runtime {
         // frame; scripts read them right after `delete()` (UAV bookkeeping).
         if self.objects.contains_key(&id) && self.dead.insert(id) {
             self.dying.push(id);
+            self.doom_epoch += 1;
         }
     }
 

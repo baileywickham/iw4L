@@ -2,6 +2,7 @@
 //! map's path nodes, kinematic path following, facing, node claims, `"goal"`,
 //! and the move/stop animscript switch.
 
+use super::actor_motion::Physics;
 use super::actors::{actor_of, run_script};
 use super::args::{arg, float, string, vector};
 use super::natives::engine::{entity_id, path_node_object};
@@ -32,12 +33,19 @@ const SKIP_CHECK_DIST: f32 = 1024.0;
 const DOOR_LOOKAHEAD: f32 = 256.0;
 const STEP_HEIGHT: f32 = 18.0;
 /// `MASK_ACTOR_SOLID` and the sight mask `Path_NearestNode` uses.
-const MASK_ACTOR_SOLID: u32 = 0x0282_0011;
+pub(crate) const MASK_ACTOR_SOLID: u32 = 0x0282_0011;
 const MASK_NODE_SIGHT: u32 = 0x0082_0011;
-const ACTOR_MINS: [f32; 3] = [-15.0, -15.0, 0.0];
-const ACTOR_MAXS: [f32; 3] = [15.0, 15.0, 72.0];
-/// Anim modes where code does not move the actor (anim deltas only).
-const ANIM_DRIVEN: [&str; 4] = ["zonly_physics", "nophysics", "noclip", "angle deltas"];
+pub(crate) const ACTOR_MINS: [f32; 3] = [-15.0, -15.0, 0.0];
+pub(crate) const ACTOR_MAXS: [f32; 3] = [15.0, 15.0, 72.0];
+/// Root motion past this per tick is a time jump, not a step.
+const MAX_ROOT_STEP: f32 = 40.0;
+/// Ticks `move` may run with a path and no root delta before the kinematic
+/// speed takes over.
+const NO_DELTA_TICKS: u16 = 4;
+/// Ticks the hull may stay blocked short of its step before it slides through.
+const BLOCKED_TICKS: u16 = 10;
+/// A traverse starts this close to the link's begin node.
+const TRAVERSE_BEGIN_DIST: f32 = 16.0;
 
 fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -401,25 +409,32 @@ pub(crate) fn set_direct_path(world: &mut World, id: ActorId, to: [f32; 3]) {
     });
 }
 
-fn floor_snap(frame: &FrameWorld, at: [f32; 3]) -> Option<f32> {
-    let t = frame.trace_world(
-        add(at, [0.0, 0.0, STEP_HEIGHT]),
-        sub(at, [0.0, 0.0, 2.0 * STEP_HEIGHT]),
-        [-4.0, -4.0, 0.0],
-        [4.0, 4.0, 4.0],
-        MASK_ACTOR_SOLID,
-    );
-    (t.fraction < 1.0 && t.startsolid == 0).then_some(t.endpos[2])
-}
-
-/// Kinematic path following: anim deltas replace the step once root motion exists.
-fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f32; 3] {
+/// Path following (`AI_ANIM_MOVE_CODE`): the length of the anim's root delta
+/// is the distance walked along the path this tick, moved through the hull
+/// physics. `move` with a path and no root delta for `NO_DELTA_TICKS` walks at
+/// the kinematic run/walk speed instead (logged once per anim). Also returns
+/// the negotiation link to start when the actor stands at its begin node.
+fn follow_path(
+    world: &mut World,
+    id: ActorId,
+    object: u64,
+    at: [f32; 3],
+) -> ([f32; 3], Option<(u16, u16)>) {
     let Some(mut path) = with_actor(world, id, |a| a.path.take()).flatten() else {
-        return at;
+        return (at, None);
     };
-    let (walk_dist, rate) = {
+    let (walk_dist, rate, delta, in_move, kinematic_link, anim_mode) = {
         let a = actor(world, id).unwrap();
-        (a.float_field("walkdist"), a.float_field("moveplaybackrate"))
+        (
+            a.float_field("walkdist"),
+            a.float_field("moveplaybackrate"),
+            a.anim_delta.clone(),
+            a.animscript
+                .as_ref()
+                .is_some_and(|(name, _)| &**name == "move"),
+            a.motion.kinematic_link,
+            a.anim_mode.clone(),
+        )
     };
     let rate = match world
         .resource_mut::<Runtime>()
@@ -430,7 +445,6 @@ fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f3
         _ if rate > 0.0 => rate,
         _ => 1.0,
     };
-    let frame = FrameWorld::from_world(world);
     let mode = if length(sub(path.final_goal, at)) >= walk_dist {
         MoveMode::Run
     } else {
@@ -445,40 +459,129 @@ fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f3
     } else {
         mode
     };
-    if path.may_skip() {
-        let after = path.points[path.next + 1].pos;
-        if length(sub(after, at)) < SKIP_CHECK_DIST
-            && (after[2] - at[2]).abs() < 64.0
-            && hull_clear(
-                &frame,
-                add(at, [0.0, 0.0, 1.0]),
-                add(after, [0.0, 0.0, 1.0]),
-            )
-        {
-            path.next += 1;
+    let anim_dist = length2(delta.trans);
+    let (step_dist, kinematic) = if anim_dist > 0.01 {
+        with_actor(world, id, |a| a.motion.no_delta_ticks = 0);
+        (anim_dist.min(MAX_ROOT_STEP), false)
+    } else {
+        let (ticks, first) = with_actor(world, id, |a| {
+            a.motion.no_delta_ticks = a.motion.no_delta_ticks.saturating_add(1);
+            let first =
+                a.motion.no_delta_ticks >= NO_DELTA_TICKS && a.motion.logged_leaf != delta.leaf;
+            if first {
+                a.motion.logged_leaf = delta.leaf.clone();
+            }
+            (a.motion.no_delta_ticks, first)
+        })
+        .unwrap_or((0, false));
+        if in_move && ticks >= NO_DELTA_TICKS {
+            if first {
+                diag::warn!(
+                    Sim,
+                    "actor: entity {} moves without root motion: anim {} has no delta; kinematic {:.0} u/s",
+                    world
+                        .resource::<Runtime>()
+                        .entities
+                        .get(&object)
+                        .map_or(-1, |e| e.number),
+                    delta.leaf.as_deref().unwrap_or("(none)"),
+                    speed
+                );
+            }
+            (speed * TICK_SECONDS, true)
+        } else {
+            (0.0, false)
+        }
+    };
+    {
+        let frame = FrameWorld::from_world(world);
+        if path.may_skip() {
+            let after = path.points[path.next + 1].pos;
+            if length(sub(after, at)) < SKIP_CHECK_DIST
+                && (after[2] - at[2]).abs() < 64.0
+                && hull_clear(
+                    &frame,
+                    add(at, [0.0, 0.0, 1.0]),
+                    add(after, [0.0, 0.0, 1.0]),
+                )
+            {
+                path.next += 1;
+            }
         }
     }
-    let mut pos = at;
-    let mut step = speed * TICK_SECONDS;
+    let start_next = path.next;
+    let mut target = at;
+    let mut step = step_dist;
     let mut traversing = false;
     while step > 0.0
         && let Some(point) = path.current().copied()
     {
+        if point.traverse && kinematic_link != point.node {
+            break;
+        }
         traversing = point.traverse;
-        let to = sub(point.pos, pos);
+        let to = sub(point.pos, target);
         let d = length(to);
         if d <= step {
-            pos = point.pos;
+            target = point.pos;
             step -= d;
             path.next += 1;
         } else {
-            pos = add(pos, to.map(|c| c * step / d));
+            target = add(target, to.map(|c| c * step / d));
             step = 0.0;
         }
     }
-    if !traversing && let Some(z) = floor_snap(&frame, pos) {
-        pos[2] = z;
-    }
+    let pos = if traversing {
+        target
+    } else if kinematic {
+        super::actor_motion::kinematic(world, at, target)
+    } else if step_dist > 0.0 {
+        let wish = [target[0] - at[0], target[1] - at[1], 0.0];
+        match super::actor_motion::physics_move(world, id, object, at, wish, Physics::Ground) {
+            Some(pos) if length2(sub(target, pos)) <= 1.0 + 0.1 * step_dist => {
+                with_actor(world, id, |a| a.motion.blocked_ticks = 0);
+                pos
+            }
+            Some(pos) => {
+                let blocked = with_actor(world, id, |a| {
+                    a.motion.blocked_ticks = a.motion.blocked_ticks.saturating_add(1);
+                    a.motion.blocked_ticks
+                })
+                .unwrap_or(0);
+                if blocked == BLOCKED_TICKS {
+                    diag::warn!(
+                        Sim,
+                        "actor: entity {} blocked at {:.0} {:.0} {:.0} short of its path; slides through",
+                        world
+                            .resource::<Runtime>()
+                            .entities
+                            .get(&object)
+                            .map_or(-1, |e| e.number),
+                        pos[0],
+                        pos[1],
+                        pos[2]
+                    );
+                }
+                if blocked >= BLOCKED_TICKS {
+                    super::actor_motion::kinematic(world, at, target)
+                } else {
+                    path.next = start_next;
+                    pos
+                }
+            }
+            None => super::actor_motion::kinematic(world, at, target),
+        }
+    } else {
+        at
+    };
+    let begin = path
+        .current()
+        .filter(|p| p.traverse && kinematic_link != p.node)
+        .and_then(|p| {
+            let before = path.points.get(path.next.checked_sub(1)?)?;
+            (length2(sub(before.pos, pos)) <= TRAVERSE_BEGIN_DIST)
+                .then_some((before.node?, p.node?))
+        });
     let done = path.current().is_none();
     let look = path
         .current()
@@ -487,9 +590,16 @@ fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f3
         .unwrap_or_else(|| sub(pos, at));
     let look_len = length2(look);
     let moved = sub(pos, at);
+    let link_walked = kinematic_link.is_some()
+        && !path
+            .current()
+            .is_some_and(|p| p.traverse && p.node == kinematic_link);
     with_actor(world, id, |a| {
         a.velocity = moved.map(|c| c / TICK_SECONDS);
         a.distance_moved += length2(moved);
+        if link_walked {
+            a.motion.kinematic_link = None;
+        }
         if look_len > 0.1 {
             a.lookahead_dir = [look[0] / look_len, look[1] / look_len, 0.0];
             a.lookahead_dist = look_len.min(path.remaining(pos));
@@ -502,10 +612,29 @@ fn follow_path(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) -> [f3
             a.path = Some(path);
         }
     });
-    pos
+    super::actor_motion::record_sample(world, id, object, pos, at, &delta, &anim_mode, kinematic);
+    (pos, begin)
 }
 
-fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
+/// In an anim-driven mode the path is not walked; points the anim carried the
+/// actor to are passed.
+fn pass_reached(world: &mut World, id: ActorId, at: [f32; 3]) {
+    with_actor(world, id, |a| {
+        let Some(path) = a.path.as_mut() else {
+            return;
+        };
+        while let Some(point) = path.current()
+            && !point.traverse
+            && path.next + 1 < path.points.len()
+            && length2(sub(point.pos, at)) <= NODE_ARRIVE_DIST
+            && (point.pos[2] - at[2]).abs() < 64.0
+        {
+            path.next += 1;
+        }
+    });
+}
+
+fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3], anim_driven: bool) {
     let Some((orient, moving, look, claimed, enemy)) = actor(world, id).map(|a| {
         (
             a.orient,
@@ -538,7 +667,7 @@ fn face(world: &mut World, id: ActorId, object: u64, at: [f32; 3]) {
             .map(|p| yaw_of(sub(p, at))),
         Orient::Motion => None,
     };
-    let Some(wanted) = wanted else {
+    let Some(wanted) = wanted.filter(|_| !(anim_driven && orient == Orient::Default)) else {
         return;
     };
     let mut runtime = world.resource_mut::<Runtime>();
@@ -577,6 +706,9 @@ fn select_animscript(world: &mut World, id: ActorId, object: u64, now: i64) {
     }) else {
         return;
     };
+    if actor(world, id).is_some_and(|a| a.traverse.is_some()) {
+        return;
+    }
     let threatened = actor(world, id)
         .and_then(|a| a.grenade)
         .is_some_and(|g| world.resource::<Runtime>().live(&g));
@@ -699,6 +831,7 @@ pub(crate) fn switch_animscript(
 
 /// A dying actor stops where it is.
 pub(crate) fn stop(world: &mut World, id: ActorId) {
+    with_actor(world, id, |a| a.traverse = None);
     clear_path(world, id);
     release_all(world, id);
 }
@@ -782,6 +915,13 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
         select_animscript(world, id, object, now);
         return;
     }
+    if actor(world, id).is_some_and(|a| a.traverse.is_some())
+        && super::actor_motion::traverse_step(world, id, object, now)
+    {
+        let at = origin(world, object);
+        face(world, id, object, at, true);
+        return;
+    }
     let at = origin(world, object);
     if let Some(goal_entity) = actor(world, id).and_then(|a| a.goal.entity) {
         if world.resource::<Runtime>().live(&goal_entity) {
@@ -791,8 +931,13 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             with_actor(world, id, |a| a.goal.entity = None);
         }
     }
-    if arriving(world, id) {
-        let moved = super::actor_cover::arrival_step(world, id, at);
+    if arriving(world, id, object) {
+        let node = actor(world, id)
+            .and_then(|a| a.claimed)
+            .map(|n| FrameWorld::from_world(world).path_graph().nodes[n as usize].origin);
+        let moved = node
+            .and_then(|node| super::actor_motion::arrival_step(world, id, object, at, node))
+            .unwrap_or_else(|| super::actor_cover::arrival_step(world, id, at));
         if moved != at {
             world
                 .resource_mut::<super::mechanics::Mechanics>()
@@ -810,9 +955,12 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
         let target = code_target(world, id, object, at, now);
         follow_target(world, id, object, at, target, now, budget);
     }
-    let anim_mode = actor(world, id).map(|a| a.anim_mode.clone());
-    let moved = if anim_mode.is_some_and(|m| ANIM_DRIVEN.contains(&&*m)) {
-        at
+    let anim_driven =
+        actor(world, id).is_some_and(|a| super::actor_motion::ANIM_DRIVEN.contains(&&*a.anim_mode));
+    let (moved, begin) = if anim_driven {
+        let moved = super::actor_motion::anim_step(world, id, object, at);
+        pass_reached(world, id, moved);
+        (moved, None)
     } else {
         follow_path(world, id, object, at)
     };
@@ -824,8 +972,12 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
             .resource_mut::<Runtime>()
             .set_object_field(object, "origin", Value::Vector(moved));
     }
+    if let Some((start, end)) = begin {
+        super::actor_motion::begin_traverse(world, id, object, start, end, now);
+        return;
+    }
     super::actor_cover::approach_notify(world, id, object);
-    face(world, id, object, moved);
+    face(world, id, object, moved, anim_driven);
     select_animscript(world, id, object, now);
     let at_goal = {
         let final_goal = actor(world, id).and_then(|a| a.path.as_ref().map(|p| p.final_goal));
@@ -850,8 +1002,8 @@ pub(crate) fn think(world: &mut World, id: ActorId, object: u64, now: i64, budge
     }
 }
 
-/// `cover_arrival` is playing: the actor slides into its node until it ends.
-fn arriving(world: &mut World, id: ActorId) -> bool {
+/// `cover_arrival` is playing: its root motion carries the actor into the node.
+fn arriving(world: &mut World, id: ActorId, object: u64) -> bool {
     let Some((arrival, script)) = actor(world, id).map(|a| (a.arrival, a.animscript.clone()))
     else {
         return false;
@@ -863,6 +1015,7 @@ fn arriving(world: &mut World, id: ActorId) -> bool {
         .is_some_and(|(name, serial)| &*name == "cover_arrival" && thread_running(world, serial));
     if !running {
         with_actor(world, id, |a| a.arrival = None);
+        super::actor_motion::finish_arrival(world, id, object);
     }
     running
 }
@@ -897,58 +1050,6 @@ fn detour_done(world: &mut World, id: ActorId, object: u64, now: i64) -> bool {
         raise(world, Value::Object(object), "runto_arrived", Vec::new());
     }
     true
-}
-
-/// Dogs in an anim-driven mode (`zonly_physics`, `nophysics`) move by their
-/// anim's root motion: the bite lunges close the last `meleeattackdist`.
-pub(crate) fn follows_root_motion(world: &World, object: u64) -> bool {
-    let linked = world
-        .resource::<Runtime>()
-        .entities
-        .get(&object)
-        .is_some_and(|e| e.linked_to.is_some());
-    !linked
-        && actor_of(world, object)
-            .and_then(|id| actor(world, id))
-            .is_some_and(|a| {
-                &*a.species == "dog" && matches!(&*a.anim_mode, "zonly_physics" | "nophysics")
-            })
-}
-
-/// Moves the actor by a model-space root delta, turned by its yaw and stopped by
-/// the clip map; height stays with the ground.
-pub(crate) fn apply_root_motion(world: &mut World, object: u64, delta: [f32; 3]) {
-    if length2(delta) < 0.01 {
-        return;
-    }
-    let at = origin(world, object);
-    let yaw = match super::players::entity_field(world, object, "angles") {
-        Value::Vector(v) => v[1].to_radians(),
-        _ => 0.0,
-    };
-    let (sin, cos) = yaw.sin_cos();
-    let step = [
-        delta[0] * cos - delta[1] * sin,
-        delta[0] * sin + delta[1] * cos,
-        0.0,
-    ];
-    let lift = |p: [f32; 3]| add(p, [0.0, 0.0, 1.0]);
-    let mins = [ACTOR_MINS[0], ACTOR_MINS[1], STEP_HEIGHT];
-    let maxs = [ACTOR_MAXS[0], ACTOR_MAXS[1], 48.0];
-    let t = FrameWorld::from_world(world).trace_world(
-        lift(at),
-        lift(add(at, step)),
-        mins,
-        maxs,
-        MASK_ACTOR_SOLID,
-    );
-    if t.startsolid != 0 || t.fraction <= 0.0 {
-        return;
-    }
-    let moved = add(at, step.map(|c| c * t.fraction));
-    world
-        .resource_mut::<Runtime>()
-        .set_object_field(object, "origin", Value::Vector(moved));
 }
 
 /// A dog's enemy (`Actor_Dog_GetEnemyPos`): where it is, a quarter second ahead
@@ -1141,12 +1242,17 @@ fn is_in_goal(world: &mut World, id: ActorId, point: [f32; 3]) -> bool {
 }
 
 fn goal_volume_nodes(world: &mut World, volume: u64) -> Vec<u16> {
-    let count = FrameWorld::from_world(world).path_graph().nodes.len();
-    (0..count as u16)
-        .filter(|&n| {
-            let at = FrameWorld::from_world(world).path_graph().nodes[n as usize].origin;
-            super::triggers::contains_point(world, volume, at)
-        })
+    let points: Vec<[f32; 3]> = FrameWorld::from_world(world)
+        .path_graph()
+        .nodes
+        .iter()
+        .map(|node| node.origin)
+        .collect();
+    super::triggers::contains_points(world, volume, &points)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, inside)| *inside)
+        .map(|(n, _)| n as u16)
         .collect()
 }
 
@@ -1300,9 +1406,22 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         teleport(world, id, object, pos, args.get(1));
         Ok(Value::Undefined)
     });
+    // During a negotiation `forceteleport` only moves the actor (the traverse
+    // scripts' height fix-ups); the path through the link is kept.
     registry.register(Method, "forceteleport", |world, receiver, args| {
         let (id, object) = receiver_actor(world, receiver)?;
         let pos = vector(args, 0)?;
+        if actor(world, id).is_some_and(|a| a.traverse.is_some()) {
+            world
+                .resource_mut::<super::mechanics::Mechanics>()
+                .stop(object, "origin");
+            let mut runtime = world.resource_mut::<Runtime>();
+            runtime.set_object_field(object, "origin", Value::Vector(pos));
+            if let Some(Value::Vector(angles)) = args.get(1) {
+                runtime.set_object_field(object, "angles", Value::Vector([0.0, angles[1], 0.0]));
+            }
+            return Ok(Value::Undefined);
+        }
         teleport(world, id, object, pos, args.get(1));
         Ok(Value::Undefined)
     });
@@ -1315,6 +1434,11 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
         let (id, _) = receiver_actor(world, receiver)?;
         let node = negotiation(world, id).map(|(_, end)| end);
         Ok(node_value(world, node))
+    });
+    registry.register(Method, "traversemode", |world, receiver, args| {
+        let mode = string(args, 0)?.to_ascii_lowercase();
+        super::actor_motion::set_traverse_mode(world, receiver, &mode)?;
+        Ok(Value::Undefined)
     });
     registry.register(Method, "maymovetopoint", |world, receiver, args| {
         let (_, object) = receiver_actor(world, receiver)?;
@@ -1396,8 +1520,12 @@ fn door_node(world: &mut World, id: ActorId, at: [f32; 3]) -> Option<u16> {
     None
 }
 
-/// The negotiation link ahead on the path: its begin and end nodes.
+/// The negotiation link being played, else the one ahead on the path: its
+/// begin and end nodes.
 fn negotiation(world: &World, id: ActorId) -> Option<(u16, u16)> {
+    if let Some(n) = &actor(world, id)?.traverse {
+        return Some((n.start, n.end));
+    }
     let path = actor(world, id)?.path.as_ref()?;
     let i = (path.next..path.points.len()).find(|&i| path.points[i].traverse)?;
     Some((

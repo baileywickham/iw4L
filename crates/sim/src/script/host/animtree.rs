@@ -14,13 +14,22 @@ pub const ANIMTREE_COMPLETE: u8 = 8;
 pub type ScriptXAnimSource = Arc<dyn Fn(&str) -> Option<Arc<AnimClip>> + Send + Sync>;
 
 /// The `animtrees/*.atr` captured from the zones plus the xanims they name.
-/// Trees are built on their first `useanimtree`, so a map that never animates
-/// a script entity decodes no clips.
+/// `prewarm` builds the trees (and decodes their clips) on a background
+/// thread while the level loads; a tree asked for before that finishes is
+/// waited for, or built on the spot when nothing is building it. Building is
+/// a pure function of the texts and clips, so who builds it does not matter.
 #[derive(Default)]
 pub struct ScriptAnimLibrary {
     texts: BTreeMap<String, String>,
     clips: Option<ScriptXAnimSource>,
-    trees: Mutex<BTreeMap<String, Result<Arc<ScriptAnimTree>, String>>>,
+    trees: Mutex<Trees>,
+    built: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct Trees {
+    done: BTreeMap<String, Result<Arc<ScriptAnimTree>, String>>,
+    building: std::collections::BTreeSet<String>,
 }
 
 impl std::fmt::Debug for ScriptAnimLibrary {
@@ -43,7 +52,71 @@ impl ScriptAnimLibrary {
                 .collect(),
             clips: Some(clips),
             trees: Mutex::default(),
+            built: std::sync::Condvar::new(),
         }
+    }
+
+    /// Builds every tree off the calling thread, largest first. The first
+    /// `useanimtree` of `generic_human` decoded ~3,500 clips inside a script
+    /// frame (50–200 ms).
+    ///
+    /// Only levels with actors (`generic_human`, single player) prewarm: a
+    /// multiplayer level keeps building on first use and decodes nothing it
+    /// never animates.
+    pub fn prewarm(library: &Arc<Self>) {
+        if !library.texts.contains_key("generic_human") || library.clips.is_none() {
+            return;
+        }
+        let library = Arc::clone(library);
+        let spawned = std::thread::Builder::new()
+            .name("animtree-prewarm".into())
+            .spawn(move || {
+                let mut names: Vec<&String> = library.texts.keys().collect();
+                names.sort_by_key(|name| std::cmp::Reverse(library.texts[*name].len()));
+                for name in names {
+                    {
+                        let mut trees = library.lock();
+                        if trees.done.contains_key(name) || !trees.building.insert(name.clone()) {
+                            continue;
+                        }
+                    }
+                    let built = library.build(name);
+                    let mut trees = library.lock();
+                    trees.building.remove(name);
+                    trees.done.entry(name.clone()).or_insert(built);
+                    library.built.notify_all();
+                }
+            });
+        if let Err(error) = spawned {
+            diag::warn!(Sim, "gsc: animtree prewarm thread: {error}");
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Trees> {
+        self.trees.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn build(&self, key: &str) -> Result<Arc<ScriptAnimTree>, String> {
+        let started = std::time::Instant::now();
+        let built = match self.texts.get(key) {
+            Some(text) => ScriptAnimTree::build(key, text, |clip| self.clip(clip)),
+            None => Err(format!("animtree {key} is not loaded")),
+        };
+        match &built {
+            Ok(tree) => diag::info!(
+                Sim,
+                "gsc: animtree {key} nodes={} leaves={} missing_xanims={} duplicates={} clip_bytes~{} built_in={}ms thread={}",
+                tree.nodes.len(),
+                tree.leaves,
+                tree.missing,
+                tree.duplicates,
+                tree.clip_bytes(),
+                started.elapsed().as_millis(),
+                std::thread::current().name().unwrap_or("?")
+            ),
+            Err(error) => diag::warn!(Sim, "gsc: animtree {key}: {error}"),
+        }
+        built
     }
 
     pub fn tree_names(&self) -> impl Iterator<Item = &str> {
@@ -56,30 +129,24 @@ impl ScriptAnimLibrary {
 
     pub(crate) fn tree(&self, name: &str) -> Result<Arc<ScriptAnimTree>, String> {
         let key = name.to_ascii_lowercase();
-        let mut trees = self.trees.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(tree) = trees.get(&key) {
-            return tree.clone();
+        let mut trees = self.lock();
+        loop {
+            if let Some(tree) = trees.done.get(&key) {
+                return tree.clone();
+            }
+            if !trees.building.contains(&key) {
+                break;
+            }
+            trees = self.built.wait(trees).unwrap_or_else(|p| p.into_inner());
         }
-        let started = std::time::Instant::now();
-        let built = match self.texts.get(&key) {
-            Some(text) => ScriptAnimTree::build(&key, text, |clip| self.clip(clip)),
-            None => Err(format!("animtree {name} is not loaded")),
-        };
-        match &built {
-            Ok(tree) => diag::info!(
-                Sim,
-                "gsc: animtree {key} nodes={} leaves={} missing_xanims={} duplicates={} clip_bytes~{} built_in={}ms",
-                tree.nodes.len(),
-                tree.leaves,
-                tree.missing,
-                tree.duplicates,
-                tree.clip_bytes(),
-                started.elapsed().as_millis()
-            ),
-            Err(error) => diag::warn!(Sim, "gsc: animtree {key}: {error}"),
-        }
-        trees.insert(key, built.clone());
-        built
+        trees.building.insert(key.clone());
+        drop(trees);
+        let built = self.build(&key);
+        let mut trees = self.lock();
+        trees.building.remove(&key);
+        let tree = trees.done.entry(key).or_insert(built).clone();
+        self.built.notify_all();
+        tree
     }
 }
 

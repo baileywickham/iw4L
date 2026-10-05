@@ -144,6 +144,63 @@ pub(crate) struct Actor {
     pub scripted_until_ms: i64,
     /// `addaieventlistener`: the AI events this actor hears as `"ai_event"` notifies.
     pub listeners: u32,
+    /// Root motion of the actor's animtree over the last anim step.
+    pub anim_delta: AnimDelta,
+    /// Physics and fallbacks of the root-motion mover.
+    pub motion: Motion,
+    /// A negotiation link being played (`animscripts/traverse/*`).
+    pub traverse: Option<Negotiation>,
+    /// `traversemode`: physics while a traverse animscript plays.
+    pub traverse_mode: TraverseMode,
+}
+
+/// Root motion the animtree moved through in one anim step (`XAnimCalcDelta`):
+/// translation in the model frame at the start of the step, yaw in degrees,
+/// and the heaviest leaf for logs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AnimDelta {
+    pub trans: [f32; 3],
+    pub yaw: f32,
+    pub leaf: Option<Arc<str>>,
+}
+
+/// Mover state: vertical speed while airborne, last standing spot, the
+/// fallback counters and the speed sample for the motion log.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Motion {
+    pub fall: f32,
+    pub air_ms: i64,
+    pub last_ground: Option<[f32; 3]>,
+    /// Ticks the move animscript has had a path but no root delta.
+    pub no_delta_ticks: u16,
+    /// Ticks the hull has been blocked short of the path step.
+    pub blocked_ticks: u16,
+    /// The leaf last reported as having no root delta.
+    pub logged_leaf: Option<Arc<str>>,
+    pub sample_dist: f32,
+    pub sample_ticks: u16,
+    pub kinematic_ticks: u16,
+    /// A negotiation link with no traverse animscript, walked kinematically.
+    pub kinematic_link: Option<u16>,
+}
+
+/// `traverseMode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TraverseMode {
+    #[default]
+    Gravity,
+    NoGravity,
+    NoClip,
+}
+
+/// The negotiation (`AIS_NEGOTIATION`) in progress: begin and end nodes, the
+/// traverse animscript and when it started.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Negotiation {
+    pub start: u16,
+    pub end: u16,
+    pub script: Arc<str>,
+    pub since_ms: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -215,6 +272,10 @@ impl Actor {
             suppressed_since: 0,
             pains: 0,
             listeners: 0,
+            anim_delta: AnimDelta::default(),
+            motion: Motion::default(),
+            traverse: None,
+            traverse_mode: TraverseMode::Gravity,
         }
     }
 

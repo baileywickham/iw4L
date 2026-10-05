@@ -158,6 +158,16 @@ pub(crate) fn entity_trace(
     mask: u32,
     ignore: TraceIgnore,
 ) -> TraceOutcome {
+    crate::step::step_stats::hot(1, || entity_trace_inner(world, start, end, mask, ignore))
+}
+
+fn entity_trace_inner(
+    world: &mut World,
+    start: [f32; 3],
+    end: [f32; 3],
+    mask: u32,
+    ignore: TraceIgnore,
+) -> TraceOutcome {
     super::super::presence::settled(world).current_sensor_trace(
         crate::bullet_collision::BulletTraceQuery {
             start,

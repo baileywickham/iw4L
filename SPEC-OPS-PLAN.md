@@ -265,3 +265,75 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   (`viewlocked_ent_num`, `viewlocked` 0) draws at LOD 0 (`viewhands_player_*` LOD 0 ends at 60 u). Bars and hands steer.
 - SP `hideviewmodel`/`showviewmodel` set that bit; `showonclient`/`hideonclient` are per-client visibility.
 - Dog knock-down: the rig, visibility, LOD and hidden weapon are wired but not yet seen in a screenshot (Air unreachable).
+
+**Actor root motion (2026-10-04)** — `script/host/actor_motion.rs`, `actor_nav.rs`, `anim.rs`
+- Soldiers and dogs move by their animtree's root delta (`motion_delta`: every weighted leaf's span, weights
+  normalized per blend node, additive layers skipped) through `step_slide_move` against the clip map (15×72,
+  gravity 800, 18 step, fall rescue after 3 s). `normal`/`none`: the delta's length walks the path; anim-driven modes
+  (`gravity`, `zonly_physics`, `nogravity`, `noclip`, `nophysics`, `angle deltas`) apply the delta turned by yaw plus the
+  anim's yaw. The dog-only root motion in `advance_anims` is gone (deltas are stored per actor and applied in think).
+- Cover arrival: the arrival anim's delta, with the miss between what it has left and the node spread over the time left
+  (arrivals end 0–6 u from the node; a pain interrupts some). Exits/turns (`zonly_physics`) carry the actor; passed path points are skipped.
+- Negotiation: at a link's begin node the actor runs `animscripts/traverse/<animscript>::main` (sticky until it ends;
+  `traversemode`, `getnegotiation*node` from the live link, `forceteleport` keeps the path). Traverse scripts are startup
+  roots; ones the zones ship unparsable (`stairs_up`, `stairs_down`) are dropped at load.
+- Fallbacks, logged: `move` with no root delta for 4 ticks walks at 180/70 (once: `pistol_stand_switch`), hull blocked
+  10 ticks slides through (≤5 per run, one favela choke at -2773 -131), stuck in solid lifts ≤18.
+- Evidence (Air, `IW4L_ACTOR_MOTION_LOG=1` prints per-actor speed/anim once a second): `run_lowready_F` steady 181–183 u/s,
+  `sprint1_loop` ~186, `run_n_gun_L/R` ~175, `Juggernaut_walkF` ~20; traversals stepup_52, step_up_12, jumpdown_40,
+  wall_hop, window_2 completed by their anims (end-node miss 7–27 u; jumpdown_40 59 u → placed); no falls.
+  Screens `context/rootmotion/favela_run_{a,b}.png`.
+- Runs (Air): killspree_favela 1:19.90, crossing 0:28.00, rooftop 2:21.00, killspree_invasion 0:59.20, juggernauts 5:53.00
+  (slower: juggernauts walk at their anim's ~20 u/s, not 70); Pit 2:28.10, snowrace1 0:58.85, mp_boneyard InGame.
+- Open: juggernaut walk speed vs the real game unverified; jumpdown_40 overshoots/undershoots its end node; no
+  `starttraversearrival`; dying actors' death anims do not move.
+
+**Hitch pass (2026-10-04, `so-hitch`)**
+- Measuring: `IW4L_GSC_STATS=1` logs a `gsc hitch:` line for every script tick over `IW4L_GSC_HITCH_MS` (default 50; wall
+  or thread CPU): phases, slowest natives, resumed functions, instructions per script function. `IW4L_SIM_STATS=1` logs each
+  step system's mean/worst, the authority tick's p50/p99 (wall and CPU) and named hot paths (settles, traces, anim, heap,
+  materialize, shots, FX world traces). Thread CPU tells real work from a contended Air descheduling the game (many "hitches"
+  in loaded runs were 100–400 ms wall at <25 ms CPU). Scripts: `context/hitch/` (worktree scratch).
+- Causes: (1) the level-entry tick is legit script work, 1.9–7.8 M instructions (`_load`, createfx, destructibles; showers'
+  `_global_fx::global_fx_create` walks `level.struct` per effect, 5.7 M), made 2–5× slower by `isdefined( array )` deep-copying
+  its argument, objects/arrays in ordered maps, three entity lookups per field access, a `foreach` key list copied twice, and
+  a resource lookup pair per instruction; (2) the first `useanimtree` of `generic_human` built the 3,630-node tree and decoded its
+  clips in the spawn tick (`dospawn`/`stalingradspawn` waves: 80–300 ms); (3) actor/player shots re-tested every collision row
+  per pellet and penetration step (55–70 ms per shotgun/sniper `shoot` on a loaded Air); (4) per tick: a full heap mark, anim
+  advance and pose publishing over every node of every actor's tree, every native trace re-reading every presence entity's
+  fields and re-sorting them, a thread-entity scan and a wait-list scan per resumption, `setgoalvolumeauto` resolving the
+  volume per path node, posing a DObj rebuilt per pose, FX world traces re-posing every model's movement brushes and fully
+  testing every brush model.
+- Fixes (all deterministic; the schedule counts ticks/allocations, never time): animtrees built on a background thread at
+  load (`ScriptAnimLibrary::prewarm`, levels with `generic_human` only; a request in flight waits); heap collection every 10th
+  tick or 8192 allocations; `EntityAnim` keeps the ascending list of non-default nodes and advances/frees/publishes only those
+  (`XAnimTreeRuntime::update_inherited_rate_listed`, same result as the full walk); thread index (serial → entity) and a
+  "doom epoch" so resumptions skip the wait-list scan unless an entity was deleted or a wait registered on one; objects and
+  arrays keyed by a hashed id, arrays as a dense vector for keys 0.. plus an ordered map (`script/array.rs`, iteration order
+  unchanged, differential-checked against `BTreeMap`); one entity lookup per field access; no argument copy for
+  `isdefined`/`isarray`; `foreach` stores its fresh key list without a copy; the instruction budget kept in a local; field
+  writes counted (`Objects`) so a settle reuses poses read since the last write, and keeps its sorted order while the
+  presence set is unchanged; `collect_wanted` reads field ids once; `contains_points` for goal volumes; cached single-model
+  DObj and a bone-name map for track binding (`xmodel_runtime`); shots keep only the rows the emission ray can reach; cached
+  posed movement brushes per row; `clipmap_iw4::transformed_capsule_trace` rejects a brush model whose bounds the swept
+  capsule misses (exactly the open trace `trace_capsule` would return).
+- Air, before → after (thread CPU unless noted; tick = authority sim tick, median of 200-tick windows; frame = bench wall
+  over the run, noisy with other agents' builds on the Air; level-entry tick = the first script tick after the player
+  spawns; the sabotage baseline ran on a busier Air):
+
+| mission | level-entry tick CPU ms | worst later script tick CPU ms (wall) | sim tick CPU p50 / p99 ms | frame p50 / p99 ms |
+|---|---|---|---|---|
+| so_killspree_favela (mid-fight) | 186 → 92 | 112 (122) → none ≥ 50 | 7.6 / 10.8 → 3.7 / 7.0 | 11.3 / 24 → 10.8 / 19 |
+| so_showers_gulag | 644 → 204 | 101 (102) → none | 10.4 / 22.2 → 6.4 / 14.7 | 32.0 / 64 → 28.8 / 53 |
+| so_snowrace1_cliffhanger | 467 → 130 | none → none | 9.0 / 12.8 → 4.3 / 7.8 | 5.9 / 47 → 5.4 / 17 |
+| so_hidden_so_ghillies | < 50 → < 50 | 82 (82) → none | 7.5 / 12.8 → 4.0 / 9.1 | 6.7 / 24 → 6.4 / 19 |
+| so_sabotage_cliffhanger | 768 → 150 | 241 (324) → none | 11.6 / 17.1 → 3.7 / 7.5 | 14.9 / 78 → 12.3 / 20 |
+
+- Regressions (Air): The Pit 2:27.90 (24/24), favela, showers (`IW4L_AUTOAIM=1`), snowrace1, hidden and sabotage
+  complete with their run scripts; `mp_boneyard` `spawn 0` → InGame.
+- Interpreter alone (local, a `global_fx_create`-shaped loop: 300 × `foreach` over 1,000 structs + field writes): 171 → 60 ms.
+- Remaining: the level-entry tick is still 90–200 ms CPU on favela/showers/cliffhanger (pure script instructions at
+  ~10–20 ns each); hiding it needs the loading overlay held until the SP entry has run (session/UI), or a faster interpreter.
+  FX particle world traces (~1,000–1,600 per tick on favela/hidden, ~6 µs each) barely moved: the bounds reject and cached
+  movement brushes are small next to walking every collision row per trace (a per-row index of brush models would be next).
+  `actors` (perception/nav) and snowrace's `vehicles::advance` and spline scripts are the largest per-tick costs left.

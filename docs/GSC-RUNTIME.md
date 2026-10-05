@@ -120,6 +120,24 @@ loop (level startup runs in one frame and needs over a million on the larger map
 panicking builtin is a runtime error of its caller. Array copies have bounds.
 Heap collection follows globals and live threads, including cycles; natives must
 keep persistent script values in script-owned roots rather than retain raw handles.
+It runs every 10th tick, or sooner once 8192 objects and arrays were allocated since
+the last one (a full mark costs ~1 ms on a Spec Ops level; an unreachable value is not
+observable, so when it is reclaimed is not either). The schedule counts ticks and
+allocations only, so clones and replays collect on the same ticks. Arguments to
+`isdefined` and `isarray` are not copied (arrays are otherwise copied on every
+argument pass and store). Object and array storage is keyed by a hashed id; field
+and element order inside each stays ordered. An array keeps its run of integer keys from
+zero in a vector and every other key in an ordered map, so list indexing is constant
+time and iteration order is unchanged (negative integers, 0.., then the rest).
+
+`IW4L_GSC_STATS=1` logs, every 200 ticks, the scheduler's mean run and heap time, the
+worst tick (wall and thread CPU), and thread, waiter, object, array and entity counts.
+A tick at or over `IW4L_GSC_HITCH_MS` (default 50, wall or CPU) also logs a `gsc hitch:`
+line: its phases, the natives that took longest (time/calls), the thread resumptions by
+the function they resumed in, and the instructions executed per script function.
+`IW4L_SIM_STATS=1` logs each step system's mean/worst time, the tick's p50/p99/max
+(wall and CPU) and named hot paths (collision settles, traces, anim advance/publish,
+heap, collision materialize, shot query/trace) per tick.
 
 ## Engine boundary and restoration
 

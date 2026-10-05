@@ -153,27 +153,87 @@ fn entity_pose(
 /// Native traces call this once per query, so it reads the two field ids
 /// once and keeps the rows in a sorted vector rather than a fresh map.
 pub(crate) fn settle_collision(world: &mut World) {
+    crate::step::step_stats::hot(0, || settle_collision_inner(world))
+}
+
+/// What the last settle read from script fields: the presence entities
+/// (id, presence) in entity order, their origin and angles, and the field
+/// write count it read them at. Native traces settle once per query; with
+/// no field written since (a perception loop asking `cansee` of several
+/// targets), the poses are reused and only visibility is read again.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SettleCache {
+    valid: bool,
+    writes: u64,
+    entities: Vec<(u64, ScriptModelId)>,
+    poses: Vec<([f32; 3], [f32; 3])>,
+    /// Indices into `entities` by presence, the last entity of a shared
+    /// presence winning (as a collected map would).
+    order: Vec<usize>,
+}
+
+fn settle_collision_inner(world: &mut World) {
     let mut runtime = world.resource_mut::<Runtime>();
     if runtime.entities.values().all(|e| e.presence.is_none()) {
         return;
     }
     let origin_field = runtime.symbol("origin");
     let angles_field = runtime.symbol("angles");
-    let mut wanted: Vec<(ScriptModelId, Pose)> = runtime
+    let runtime = &mut *runtime;
+    let current: Vec<(u64, ScriptModelId, bool, bool)> = runtime
         .entities
         .iter()
-        .filter(|(_, entity)| entity.presence.is_some())
-        .filter_map(|(id, entity)| entity_pose(&runtime, *id, entity, (origin_field, angles_field)))
+        .filter_map(|(id, e)| Some((*id, e.presence?, e.hidden, e.solid)))
         .collect();
-    // A later entity with the same presence wins, as a collected map would.
-    wanted.sort_by_key(|(presence, _)| *presence);
-    wanted.dedup_by(|later, earlier| {
-        let same = later.0 == earlier.0;
-        if same {
-            earlier.1 = later.1;
-        }
-        same
-    });
+    let cache = &mut runtime.settle_cache;
+    let same_entities = cache.valid
+        && cache.entities.len() == current.len()
+        && cache
+            .entities
+            .iter()
+            .zip(&current)
+            .all(|(have, now)| have.0 == now.0 && have.1 == now.1);
+    if !same_entities {
+        let mut order: Vec<usize> = (0..current.len()).collect();
+        order.sort_by_key(|at| current[*at].1);
+        order.dedup_by(|later, earlier| {
+            let same = current[*later].1 == current[*earlier].1;
+            if same {
+                *earlier = *later;
+            }
+            same
+        });
+        cache.order = order;
+    }
+    if !same_entities || cache.writes != runtime.objects.writes() {
+        let objects = &runtime.objects;
+        cache.poses = current
+            .iter()
+            .map(|(id, ..)| {
+                let values = objects.get(id);
+                let read = |field| match values.and_then(|values| values.get(&field)) {
+                    Some(Value::Vector(v)) => *v,
+                    _ => [0.0; 3],
+                };
+                (read(origin_field), read(angles_field))
+            })
+            .collect();
+        cache.entities = current
+            .iter()
+            .map(|(id, presence, ..)| (*id, *presence))
+            .collect();
+        cache.writes = objects.writes();
+        cache.valid = true;
+    }
+    let wanted: Vec<(ScriptModelId, Pose)> = cache
+        .order
+        .iter()
+        .map(|&at| {
+            let (_, presence, hidden, solid) = current[at];
+            let (origin, angles) = cache.poses[at];
+            (presence, (origin, angles, hidden, solid))
+        })
+        .collect();
     let mut frame = FrameWorld::from_world(world);
     for row in frame.entity_collision_capabilities_mut() {
         if let Some(at) = row
@@ -510,20 +570,35 @@ fn resolve_link_tags(world: &mut World) {
 
 fn collect_wanted(world: &mut World) -> Vec<Wanted> {
     let mut runtime = world.resource_mut::<Runtime>();
-    let ids: Vec<(u64, ScriptModelId, bool, u64, bool)> = runtime
-        .entities
-        .iter()
-        .filter_map(|(id, e)| e.presence.map(|p| (*id, p, e.hidden, e.shown_to, e.solid)))
-        .collect();
-    let mut wanted = Vec::with_capacity(ids.len());
-    for (object, presence, hidden, shown_to, solid) in ids {
-        let origin = vector(&mut runtime, object, "origin");
-        let angles = vector(&mut runtime, object, "angles");
-        let model = model_field(&mut runtime, object);
-        let entity = runtime.entities.get_mut(&object).unwrap();
+    let fields = (
+        runtime.symbol("origin"),
+        runtime.symbol("angles"),
+        runtime.symbol("model"),
+    );
+    // Every presence entity is compared each tick: the field ids are read
+    // once, not hashed by name three times per entity.
+    let runtime = &mut *runtime;
+    let mut wanted = Vec::new();
+    for (&object, entity) in runtime.entities.iter_mut() {
+        let Some(presence) = entity.presence else {
+            continue;
+        };
+        let values = runtime.objects.get(&object);
+        let field = |id| values.and_then(|values| values.get(&id));
+        let vector = |id| match field(id) {
+            Some(Value::Vector(v)) => *v,
+            _ => [0.0; 3],
+        };
+        let (origin, angles) = (vector(fields.0), vector(fields.1));
+        let model: Option<Arc<str>> = match field(fields.2) {
+            Some(Value::String(model)) if !model.is_empty() && !model.starts_with('*') => {
+                Some(model.clone().into())
+            }
+            _ => None,
+        };
+        let (hidden, shown_to, solid) = (entity.hidden, entity.shown_to, entity.solid);
         let part_ops = std::mem::take(&mut entity.part_ops);
         let anim_op = entity.anim_op.take();
-        let attachments = entity.attachments.clone();
         let collision_only = matches!(entity.kind, EntityKind::Missile(_));
         let unchanged = part_ops.is_empty()
             && anim_op.is_none()
@@ -533,7 +608,7 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
                     && shown.shown_to == shown_to
                     && shown.solid == solid
                     && shown.model == model
-                    && shown.attachments == attachments
+                    && shown.attachments == entity.attachments
                     && near(shown.origin, origin)
                     && near_angles(shown.angles, angles)
             });
@@ -547,7 +622,7 @@ fn collect_wanted(world: &mut World) -> Vec<Wanted> {
             origin,
             angles,
             model,
-            attachments,
+            attachments: entity.attachments.clone(),
             hidden,
             shown_to,
             solid,

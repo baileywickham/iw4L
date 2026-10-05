@@ -36,25 +36,28 @@ pub(crate) fn schedule() -> Schedule {
     let mut schedule = Schedule::default();
     schedule.add_systems(
         (
-            advance_time_system,
-            expire_transient_events_system,
-            crate::script::apply_disconnects,
-            crate::script::advance_mechanics,
-            crate::script::advance_scheduler,
+            timed("time", advance_time_system),
+            timed("expire", expire_transient_events_system),
+            timed("disconnects", crate::script::apply_disconnects),
+            timed("mechanics", crate::script::advance_mechanics),
+            timed("scheduler", crate::script::advance_scheduler),
             (
-                apply_script_signals_system,
-                apply_actions_system,
-                crate::script::sync_players,
-                crate::script::sync_presence,
-                run_players_system,
-                record_collision_state_system,
-                crate::script::host::actors::run_actors,
-                run_entity_types_system,
-                dispatch_touches_system,
-                crate::script::sync_engine_events,
-                finalize_system,
-                crate::script::host::natives::iw4::deliver_local_presentation_dvars,
-                publish_snapshot_system,
+                timed("signals", apply_script_signals_system),
+                timed("actions", apply_actions_system),
+                timed("sync_players", crate::script::sync_players),
+                timed("presence", crate::script::sync_presence),
+                timed("players", run_players_system),
+                timed("collision_state", record_collision_state_system),
+                timed("actors", crate::script::host::actors::run_actors),
+                timed("entities", run_entity_types_system),
+                timed("touches", dispatch_touches_system),
+                timed("engine_events", crate::script::sync_engine_events),
+                timed("finalize", finalize_system),
+                timed(
+                    "dvars",
+                    crate::script::host::natives::iw4::deliver_local_presentation_dvars,
+                ),
+                timed("publish", publish_snapshot_system),
             )
                 .chain()
                 .run_if(crate::script::healthy),
@@ -62,6 +65,179 @@ pub(crate) fn schedule() -> Schedule {
             .chain(),
     );
     schedule
+}
+
+/// `IW4L_SIM_STATS=1`: every 200 authority ticks, logs each step system's mean
+/// and worst time and the tick's p50/p99/max (wall time; not part of the sim).
+fn timed(name: &'static str, system: fn(&mut World)) -> impl FnMut(&mut World) {
+    move |world: &mut World| {
+        // Prediction and replay steps run the same schedule; only authority
+        // ticks are the sim's cost.
+        if !step_stats::enabled()
+            || !world
+                .get_resource::<StepRequest>()
+                .is_some_and(|r| r.reason.advances_authority_world())
+        {
+            system(world);
+            return;
+        }
+        let started = std::time::Instant::now();
+        let cpu = step_stats::cpu_now();
+        system(world);
+        step_stats::record(
+            world,
+            name,
+            started.elapsed().as_nanos() as u64,
+            step_stats::cpu_now() - cpu,
+        );
+    }
+}
+
+pub(crate) mod step_stats {
+    use bevy_ecs::prelude::World;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{LazyLock, Mutex};
+
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("IW4L_SIM_STATS").is_ok_and(|v| v == "1"));
+
+    pub(crate) fn enabled() -> bool {
+        *ENABLED
+    }
+
+    /// This thread's CPU time (ns): a stats measurement that time the
+    /// thread spent descheduled (a loaded machine) does not inflate.
+    pub(crate) fn cpu_now() -> u64 {
+        #[cfg(unix)]
+        {
+            let mut ts = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: `ts` is a valid out-parameter for the duration of the call.
+            if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) } == 0 {
+                return ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64;
+            }
+        }
+        static START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+        START.elapsed().as_nanos() as u64
+    }
+
+    /// Named hot paths timed inside the systems (calls and ns, summed over
+    /// the window, from any thread).
+    pub(crate) const HOT: [&str; 12] = [
+        "settle",
+        "trace",
+        "world_trace",
+        "anim_adv",
+        "anim_pub",
+        "heap",
+        "model_brushes",
+        "materialize",
+        "shot_query",
+        "shot_segments",
+        "phase_trace",
+        "coll_history",
+    ];
+    static HOT_NS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+    static HOT_N: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+
+    pub(crate) fn hot<R>(slot: usize, f: impl FnOnce() -> R) -> R {
+        if !enabled() {
+            return f();
+        }
+        let started = std::time::Instant::now();
+        let r = f();
+        HOT_NS[slot].fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        HOT_N[slot].fetch_add(1, Ordering::Relaxed);
+        r
+    }
+
+    fn hot_rows(ticks: f64) -> String {
+        (0..HOT.len())
+            .filter_map(|i| {
+                let ns = HOT_NS[i].swap(0, Ordering::Relaxed);
+                let n = HOT_N[i].swap(0, Ordering::Relaxed);
+                (n > 0).then(|| {
+                    format!(
+                        "{}={:.3}ms/{:.1}",
+                        HOT[i],
+                        ns as f64 / ticks / 1e6,
+                        n as f64 / ticks
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[derive(Default)]
+    struct Window {
+        systems: Vec<(&'static str, u64, u64)>,
+        tick_ns: u64,
+        tick_cpu: u64,
+        ticks: Vec<u64>,
+        cpu: Vec<u64>,
+    }
+
+    static WINDOW: LazyLock<Mutex<Window>> = LazyLock::new(Mutex::default);
+
+    pub(super) fn record(world: &World, name: &'static str, ns: u64, cpu: u64) {
+        let Ok(mut w) = WINDOW.lock() else {
+            return;
+        };
+        match w.systems.iter_mut().find(|row| row.0 == name) {
+            Some(row) => {
+                row.1 += ns;
+                row.2 = row.2.max(ns);
+            }
+            None => w.systems.push((name, ns, ns)),
+        }
+        w.tick_ns += ns;
+        w.tick_cpu += cpu;
+        if name != "publish" {
+            return;
+        }
+        let tick = std::mem::take(&mut w.tick_ns);
+        w.ticks.push(tick);
+        let tick_cpu = std::mem::take(&mut w.tick_cpu);
+        w.cpu.push(tick_cpu);
+        if w.ticks.len() < 200 {
+            return;
+        }
+        let mut ticks = std::mem::take(&mut w.ticks);
+        ticks.sort_unstable();
+        let mut cpu = std::mem::take(&mut w.cpu);
+        cpu.sort_unstable();
+        let n = ticks.len() as f64;
+        let at = |q: f64| ticks[((n - 1.0) * q) as usize] as f64 / 1e6;
+        let cpu_at = |q: f64| cpu[((n - 1.0) * q) as usize] as f64 / 1e6;
+        let rows = w
+            .systems
+            .iter()
+            .filter(|row| row.2 >= 100_000)
+            .map(|(k, sum, max)| {
+                format!("{k}={:.2}/{:.1}", *sum as f64 / n / 1e6, *max as f64 / 1e6)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let now = world
+            .get_resource::<super::StepRequest>()
+            .map_or(0, |r| r.tick.0);
+        diag::info!(
+            Sim,
+            "sim stats: tick={now} ticks={} p50_ms={:.2} p99_ms={:.2} max_ms={:.2} cpu_p50_ms={:.2} cpu_p99_ms={:.2} cpu_max_ms={:.2} mean/max[{rows}] hot_per_tick[{}]",
+            ticks.len(),
+            at(0.5),
+            at(0.99),
+            at(1.0),
+            cpu_at(0.5),
+            cpu_at(0.99),
+            cpu_at(1.0),
+            hot_rows(n),
+        );
+        *w = Window::default();
+    }
 }
 
 pub(crate) fn run_schedule(
@@ -126,11 +302,14 @@ fn apply_script_signals_system(world: &mut World) {
 }
 
 pub fn phase_materialize_entity_dobjs(world: &mut SimState) {
-    for capabilities in world.entity_collision_capabilities_mut() {
-        if let Some(dobj) = &mut capabilities.dobj {
-            dobj.materialize();
+    step_stats::hot(7, || {
+        for capabilities in world.entity_collision_capabilities_mut() {
+            if let Some(dobj) = &mut capabilities.dobj {
+                dobj.materialize();
+                dobj.refresh_movement_brushes();
+            }
         }
-    }
+    })
 }
 
 fn phase_animated_map_models(world: &mut FrameWorld, tick: Tick, msec: i32) {
@@ -563,7 +742,7 @@ fn run_entity_types_system(ecs: &mut World) {
         phase_materialize_entity_dobjs(&mut world);
 
         if world.publishes_snapshot() {
-            world.record_entity_collision_history(tick);
+            step_stats::hot(11, || world.record_entity_collision_history(tick));
         }
 
         crate::remote_missile::advance(&mut world, tick);

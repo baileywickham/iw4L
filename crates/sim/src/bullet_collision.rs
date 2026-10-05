@@ -196,6 +196,17 @@ pub struct AuthorityDObjState {
         String,
         Option<std::sync::Arc<xmodel_runtime::RetainedModelCapability>>,
     )>,
+    /// The capability's movement brushes posed at `world_from_model`, kept
+    /// with the pose and capability they were posed for (a stale set is
+    /// never used: see `posed_movement_brushes`).
+    movement: Option<PosedMovement>,
+}
+
+#[derive(Clone, Debug)]
+struct PosedMovement {
+    world_from_model: glam::Mat4,
+    capability: std::sync::Arc<xmodel_runtime::RetainedModelCapability>,
+    brushes: std::sync::Arc<[crate::world::SimBrush]>,
 }
 
 fn iw_angles_to_mat4(origin: glam::Vec3, angles: [f32; 3]) -> glam::Mat4 {
@@ -332,6 +343,7 @@ impl AuthorityDObjState {
             apos: None,
             t5_destructible: None,
             swap_capabilities: Vec::new(),
+            movement: None,
         }
     }
 
@@ -656,6 +668,34 @@ impl AuthorityDObjState {
         let origin = self.world_from_model.w_axis.truncate();
         self.world_from_model = iw_angles_to_mat4(origin, angles);
         Some(angles)
+    }
+
+    /// The movement brushes posed for the current pose and capability, when
+    /// the last `refresh_movement_brushes` still holds.
+    pub(crate) fn posed_movement_brushes(&self) -> Option<&[crate::world::SimBrush]> {
+        let capability = self.capability.as_ref()?;
+        self.movement
+            .as_ref()
+            .filter(|posed| {
+                posed.world_from_model == self.world_from_model
+                    && std::sync::Arc::ptr_eq(&posed.capability, capability)
+            })
+            .map(|posed| &posed.brushes[..])
+    }
+
+    pub(crate) fn refresh_movement_brushes(&mut self) {
+        let Some(capability) = self.capability.as_ref() else {
+            self.movement = None;
+            return;
+        };
+        if capability.movement_brushes.is_empty() || self.posed_movement_brushes().is_some() {
+            return;
+        }
+        self.movement = Some(PosedMovement {
+            world_from_model: self.world_from_model,
+            capability: std::sync::Arc::clone(capability),
+            brushes: crate::world::posed_movement_brushes(capability, self.world_from_model).into(),
+        });
     }
 
     pub fn materialize(&mut self) {
@@ -2565,6 +2605,24 @@ fn cmodel_world_aabb(
         }
     }
     pad_aabb(mins, maxs)
+}
+
+/// Whether any part of the segment `start`→`end` (padded a unit for the
+/// penetration steps that restart on it) can touch `geom`: a bullet's every
+/// sub-trace lies on its emission ray, and `bullet_trace_filtered` rejects a
+/// geom whose bounds the sub-trace misses.
+pub(crate) fn geom_may_meet_ray(
+    geom: &EntityCollisionTraceGeom,
+    cmodels: &SimClipCmodels,
+    start: [f32; 3],
+    end: [f32; 3],
+) -> bool {
+    geom_abs_aabb(geom, cmodels).is_some_and(|(mins, maxs)| {
+        !matches!(
+            ray_aabb_box(start, end, mins.map(|v| v - 1.0), maxs.map(|v| v + 1.0)),
+            RayAabb::Miss
+        )
+    })
 }
 
 fn geom_abs_aabb(

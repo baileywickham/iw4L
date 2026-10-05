@@ -379,6 +379,75 @@ impl XAnimTreeRuntime {
         Ok(())
     }
 
+    /// `update_inherited_rate` over `nodes` only (ascending ids). Every node
+    /// left out must hold the default state: such a node keeps it through an
+    /// update, so the result is the full walk's, without walking the
+    /// thousands of idle nodes of a large script tree.
+    pub fn update_inherited_rate_listed(
+        &mut self,
+        dtime_seconds: f32,
+        nodes: &[u16],
+    ) -> Result<(), XAnimTreeError> {
+        if !dtime_seconds.is_finite() || dtime_seconds < 0.0 {
+            return Err(XAnimTreeError::NonFiniteState { node: 0 });
+        }
+        for &node in nodes {
+            let node = node as usize;
+            let parent_has_weight = self.definition.nodes[node]
+                .parent
+                .is_none_or(|parent| self.states[parent.0 as usize].weight != 0.0);
+            let state = &mut self.states[node];
+            let (weight, goal_time) = advance_goal_weight(
+                state.weight,
+                state.goal_weight,
+                state.goal_time,
+                dtime_seconds,
+                parent_has_weight,
+            );
+            state.weight = weight;
+            state.goal_time = goal_time;
+            state.old_time = state.time;
+            state.old_cycle_count = state.cycle_count;
+        }
+        let mut rates: Vec<f32> = Vec::with_capacity(nodes.len());
+        for (at, &node) in nodes.iter().enumerate() {
+            let parent = self.definition.nodes[node as usize]
+                .parent
+                .map_or(1.0, |parent| {
+                    // A parent left out is idle: no weight, so no rate.
+                    if self.states[parent.0 as usize].weight == 0.0 {
+                        0.0
+                    } else {
+                        nodes[..at]
+                            .binary_search(&parent.0)
+                            .map_or(0.0, |index| rates[index])
+                    }
+                });
+            rates.push(parent * self.states[node as usize].rate);
+        }
+        for (at, &node) in nodes.iter().enumerate() {
+            let node = node as usize;
+            if self.states[node].weight == 0.0 {
+                continue;
+            }
+            let XAnimNodeKind::Leaf { clip, .. } = &self.definition.nodes[node].kind else {
+                continue;
+            };
+            let state = &mut self.states[node];
+            let (time, cycle) = advance_leaf_time(
+                state.old_time,
+                state.cycle_count,
+                rates[at],
+                clip.frequency(),
+                dtime_seconds,
+                clip.looping,
+            );
+            state.time = time;
+            state.cycle_count = cycle;
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn calc_delta_translation(&self) -> Option<[f32; 3]> {
         let mut found: Option<[f32; 3]> = None;
