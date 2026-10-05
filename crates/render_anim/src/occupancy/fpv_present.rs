@@ -350,6 +350,9 @@ fn viewweapon_drawgun_admit(
     b_position_to_ads: bool,
 ) -> Option<(bool, Option<&'static str>)> {
     let reg = weapons?;
+    if ps.weap_flags & playerstate_iw4::weap_flags::VIEWMODEL_HIDDEN != 0 {
+        return Some((false, Some("viewmodel_hidden")));
+    }
     let viewmodel = fpv_viewmodel_weapon(ps, reg);
     let facts = reg.facts_of(viewmodel)?;
 

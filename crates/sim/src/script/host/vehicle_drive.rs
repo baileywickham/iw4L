@@ -50,8 +50,10 @@ const CRASH_SPEED: f32 = 900.0;
 const SOLID: u32 = 0x0080_0211;
 /// The autopilot's speed between gates (no race spline).
 const GATE_MPH: f32 = 70.0;
-/// Where the driver's feet sit relative to the vehicle origin.
-const SEAT: [f32; 3] = [-16.0, 0.0, -8.0];
+/// The driver's feet sit on the vehicle's `tag_player`, where first-person vehicle
+/// models (`vehicle_snowmobile_player`) attach the player rig (`viewhands_player_*`,
+/// rooted at the player's origin like the scripted-sequence rigs).
+const SEAT_TAG: &str = "tag_player";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DriveInput {
@@ -582,8 +584,8 @@ fn mount(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, S
         client,
         PlayerLink {
             parent: vehicle,
-            tag: None,
-            origin: SEAT,
+            tag: Some(SEAT_TAG.into()),
+            origin: [0.0; 3],
             angles: [0.0; 3],
             view: LinkView::Delta,
             clamp: None,
@@ -592,6 +594,7 @@ fn mount(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, S
         },
     );
     super::players::apply_player_links(world);
+    driver_view(world, client);
     diag::info!(Sim, "vehicle: client {client} mounts vehicle {vehicle}");
     raise(
         world,
@@ -600,6 +603,15 @@ fn mount(world: &mut World, receiver: &Value, args: &[Value]) -> Result<Value, S
         vec![receiver.clone()],
     );
     Ok(Value::Undefined)
+}
+
+/// A driver's hands are on the bars: the vehicle's own model draws them, no viewmodel.
+/// Unlinking clears both (`players::unlink_player`).
+fn driver_view(world: &mut World, client: u32) {
+    super::natives::sp::set_viewmodel_hidden(world, client, true);
+    if let Some(ps) = FrameWorld::from_world(world).player_mut(crate::ClientId(client)) {
+        ps.link_flags |= playerstate_iw4::LINK_FLAGS_VEHICLE_SEAT;
+    }
 }
 
 fn dismount(world: &mut World, receiver: &Value) -> Result<Value, String> {

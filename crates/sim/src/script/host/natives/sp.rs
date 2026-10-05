@@ -407,7 +407,69 @@ pub(crate) fn register(registry: &mut NativeRegistry) {
 /// screen effects, look-at text, saves, badplaces, glass, and vehicle physics
 /// knobs on vehicles that are not simulated. Queries answer as for a level
 /// with none of these.
+pub(crate) fn set_viewmodel_hidden(world: &mut World, client: u32, hidden: bool) {
+    let mut frame = crate::frame::FrameWorld::from_world(world);
+    if let Some(ps) = frame.player_mut(crate::ClientId(client)) {
+        let bit = playerstate_iw4::weap_flags::VIEWMODEL_HIDDEN;
+        if hidden {
+            ps.weap_flags |= bit;
+        } else {
+            ps.weap_flags &= !bit;
+        }
+    }
+}
+
 fn register_presentation(registry: &mut NativeRegistry) {
+    registry.register(Namespace::Method, "hideviewmodel", |world, receiver, _| {
+        let client = super::player::player(world, receiver)?;
+        set_viewmodel_hidden(world, client, true);
+        Ok(Value::Undefined)
+    });
+    registry.register(Namespace::Method, "showviewmodel", |world, receiver, _| {
+        let client = super::player::player(world, receiver)?;
+        set_viewmodel_hidden(world, client, false);
+        Ok(Value::Undefined)
+    });
+    // Per-client visibility of script models (the dog knock-down's arms, co-op riders);
+    // players and actors are not script models and keep their own visibility.
+    registry.register(
+        Namespace::Method,
+        "showonclient",
+        |world, receiver, args| {
+            let Ok(client) = super::player::player(world, super::super::args::arg(args, 0)?) else {
+                return Ok(Value::Undefined);
+            };
+            if entity_id(world, receiver).is_err() {
+                return Ok(Value::Undefined);
+            }
+            let bit = super::t5::client_bits(world, [client]);
+            super::t5::visibility(world, receiver, |e, _| {
+                if e.hidden {
+                    e.shown_to |= bit;
+                }
+            })
+        },
+    );
+    registry.register(
+        Namespace::Method,
+        "hideonclient",
+        |world, receiver, args| {
+            let Ok(client) = super::player::player(world, super::super::args::arg(args, 0)?) else {
+                return Ok(Value::Undefined);
+            };
+            if entity_id(world, receiver).is_err() {
+                return Ok(Value::Undefined);
+            }
+            let bit = super::t5::client_bits(world, [client]);
+            super::t5::visibility(world, receiver, |e, everyone| {
+                if !e.hidden {
+                    e.hidden = true;
+                    e.shown_to = everyone;
+                }
+                e.shown_to &= !bit;
+            })
+        },
+    );
     use Namespace::{Function, Method};
     for name in [
         "deactivateeq",
@@ -454,8 +516,6 @@ fn register_presentation(registry: &mut NativeRegistry) {
         "setwaitspeed",
         "vehphys_crash",
         "dontcastshadows",
-        "hideonclient",
-        "showonclient",
         "setswitchnode",
         "setproneanimnodes",
         "updateprone",
@@ -479,8 +539,6 @@ fn register_presentation(registry: &mut NativeRegistry) {
         "clearpitchorient",
         "hidehud",
         "showhud",
-        "hideviewmodel",
-        "showviewmodel",
         "allowlean",
         // A dead vehicle's slot; vehicles here hold none.
         "freevehicle",

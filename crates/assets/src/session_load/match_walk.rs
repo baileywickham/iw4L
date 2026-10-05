@@ -269,17 +269,14 @@ pub(super) async fn walk_prepared_match(
             scripts.overlay(so.mission.scripts);
             if let Some(mut addon) = so.mission.addon_entities.take() {
                 if let Some(clip) = clip.as_mut() {
-                    addon = asset_world::offset_trigger_model_keys(
-                        &addon,
-                        clip.trigger_models.len(),
-                    );
+                    addon =
+                        asset_world::offset_trigger_model_keys(&addon, clip.trigger_models.len());
                     report.push(format!(
                         "spec ops trigger models: {} after the map's {}",
                         so.mission.addon_triggers.len(),
                         clip.trigger_models.len()
                     ));
-                    clip.trigger_models
-                        .append(&mut so.mission.addon_triggers);
+                    clip.trigger_models.append(&mut so.mission.addon_triggers);
                 }
                 let merged = match scripts.entities() {
                     Some(base) => format!("{base}\n{addon}"),
@@ -343,8 +340,20 @@ pub(super) async fn walk_prepared_match(
             skeletons: common_sp_skeletons,
             ..
         } = common_sp;
-        sp_skeletons.absorb_captured(std::mem::take(&mut mission.skeletons));
-        sp_skeletons.absorb_captured(common_sp_skeletons);
+        let script_names = scripts.asset_names();
+        let mut mission_models = std::mem::take(&mut mission.skeletons);
+        let mut common_sp_models = common_sp_skeletons;
+        mission_models.retain_names(&script_names);
+        common_sp_models.retain_names(&script_names);
+        let spliced = mission_models.splice_shared_lods(
+            &mission.pending_lods,
+            &world.map_xmodel_scene_assets.shared_surfaces,
+        );
+        if spliced > 0 {
+            report.push(format!(
+                "spec ops mission models: {spliced} LODs drawn from the map's surfaces"
+            ));
+        }
         let mp_rows = weapons.len();
         let fpv_added = fpv_meshes.absorb(common_sp_fpv);
         let world_added = world_weapons.absorb(common_sp_world);
@@ -370,12 +379,41 @@ pub(super) async fn walk_prepared_match(
             "spec ops SP common weapon assets: view models +{fpv_added} world guns +{world_added} clips +{xanim_added}; {} SP common materials not merged",
             common_sp_materials.as_ref().map_or(0, |m| m.materials.len())
         ));
-        // The laser beam (`laserForceOn`) draws `gfx_laser_light`, which only SP common has.
-        if let Some(mut lasers) = common_sp_materials {
-            lasers.retain_materials(|material| material.name.as_str().starts_with("gfx_laser"));
-            let n = lasers.materials.len();
-            materials.absorb_asset_population_host_materials_win(lasers);
-            report.push(format!("spec ops SP common laser materials: {n} merged"));
+        // The laser beam (`laserForceOn`) draws `gfx_laser_light`, which only SP common has;
+        // SP common models the scripts name draw with their own materials.
+        match common_sp_materials {
+            Some(mut common_sp_materials) => {
+                let old_names: Vec<String> = common_sp_materials
+                    .materials
+                    .iter()
+                    .map(|material| material.name.as_str().to_owned())
+                    .collect();
+                let used: std::collections::BTreeSet<&str> = common_sp_models
+                    .walk_material_indices()
+                    .filter_map(|index| old_names.get(index).map(String::as_str))
+                    .collect();
+                common_sp_materials.retain_materials(|material| {
+                    let name = material.name.as_str();
+                    name.starts_with("gfx_laser") || used.contains(name)
+                });
+                let n = common_sp_materials.materials.len();
+                let kept: std::collections::HashMap<String, usize> = common_sp_materials
+                    .materials
+                    .iter()
+                    .enumerate()
+                    .map(|(at, material)| (material.name.as_str().to_owned(), at))
+                    .collect();
+                let linked =
+                    materials.absorb_asset_population_host_materials_win(common_sp_materials);
+                common_sp_models.remap_walk_materials_with(|old| {
+                    linked.get(*kept.get(old_names.get(old)?)?).copied()
+                });
+                report.push(format!(
+                    "spec ops SP common materials: {n} merged (lasers and {} script models)",
+                    common_sp_models.len()
+                ));
+            }
+            None => common_sp_models.remap_walk_materials_with(|_| None),
         }
         let mut sources = vec![
             ("SP common", common_sp_weapons),
@@ -384,13 +422,20 @@ pub(super) async fn walk_prepared_match(
         ];
         world_weapons.absorb(map_weapons.world_weapons);
         world_weapons.absorb(mission.world_weapons);
-        if let Some(mission_materials) = mission.materials {
-            let n = mission_materials.materials.len();
-            materials.absorb_asset_population_host_materials_win(mission_materials);
-            report.push(format!(
-                "spec ops mission materials: {n} merged into the map pool"
-            ));
+        match mission.materials {
+            Some(mission_materials) => {
+                let n = mission_materials.materials.len();
+                let linked =
+                    materials.absorb_asset_population_host_materials_win(mission_materials);
+                mission_models.remap_walk_materials(&linked);
+                report.push(format!(
+                    "spec ops mission materials: {n} merged into the map pool"
+                ));
+            }
+            None => mission_models.remap_walk_materials_with(|_| None),
         }
+        sp_skeletons.absorb_captured(mission_models);
+        sp_skeletons.absorb_captured(common_sp_models);
         mission_weapons = Some((mission.fpv_meshes, mission.xanims));
         let mut sp_names = Vec::new();
         for (label, zone) in sources.drain(..) {
@@ -577,6 +622,10 @@ pub(super) async fn walk_prepared_match(
             sp_skeletons.len()
         ));
     }
+    // Mission and SP common models the scripts draw (`setmodel`/`attach`); the map's own win.
+    world
+        .map_xmodel_scene_assets
+        .absorb_captured(sp_skeletons.clone());
     world.sp_model_skeletons = sp_skeletons;
     t5_scene_models.retain_names(&scene_names);
     iw5_scene_models.retain_names(&scene_names);

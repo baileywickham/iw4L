@@ -1373,6 +1373,7 @@ pub(crate) fn walk_script_zone(
             xanims,
             bodies,
             skeletons,
+            pending_lods,
             ..
         } = *capture;
         weapons.resolve_reticles(&sink.materials);
@@ -1393,6 +1394,7 @@ pub(crate) fn walk_script_zone(
             materials: Some(std::mem::take(&mut sink.materials)),
             bodies,
             skeletons,
+            pending_lods,
         };
     }
     walk

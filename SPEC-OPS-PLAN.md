@@ -252,3 +252,16 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   (last line kept per player). Scripted one-shot presses (`weapnext`, `+actionslot N`) in an unfocused window fire once.
 - Tooling (worktree scratch): `context/coop/air_duo.sh` (both clients + local master on the Air),
   `context/coop/air_lobby.sh`, `context/pit_runs/air_stars.sh` (fresh profile).
+
+**First-person vehicle and rig models (2026-10-04)**
+- Snowrace: `_snowmobile_drive` sets the bike to `vehicle_snowmobile_co_op` and attaches `viewhands_player_arctic_wind_coop`
+  at `tag_player`; both live in the mission zone with LODs that name the base map's surfaces (`,vehicle_snowmobile_lod310`,
+  `,viewhands_arctic_wind10`). SP common/mission XModels now capture full meshes (bones-only fallback); cross-zone LODs are
+  deferred (`PendingSharedLod`) and spliced from the map walk's surfaces; the models the scripts name join the render
+  catalog with their materials (mission absorb map, SP common materials those models use).
+- Driver: feet on the vehicle's `tag_player` (eye = rig camera, 60 u up), `LINK_FLAGS_VEHICLE_SEAT`, viewmodel hidden
+  (`weap_flags::VIEWMODEL_HIDDEN`), links re-applied after the drive step (the view lagged a tick, 132 u at 150 mph); the
+  client draws the driven bike from the player's origin and `link_weapon_angles` (the seat pose). A player's link parent
+  (`viewlocked_ent_num`, `viewlocked` 0) draws at LOD 0 (`viewhands_player_*` LOD 0 ends at 60 u). Bars and hands steer.
+- SP `hideviewmodel`/`showviewmodel` set that bit; `showonclient`/`hideonclient` are per-client visibility.
+- Dog knock-down: the rig, visibility, LOD and hidden weapon are wired but not yet seen in a screenshot (Air unreachable).

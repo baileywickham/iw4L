@@ -99,6 +99,8 @@ pub struct ZoneWeapons {
     pub materials: Option<asset_material::MaterialCatalog>,
     pub bodies: BodyMeshBuild,
     pub skeletons: asset_world::MapXModelSceneCatalog,
+    /// `skeletons` LODs whose surfaces live in the base map (spliced after the map walk).
+    pub pending_lods: std::collections::BTreeMap<String, Vec<asset_model::PendingSharedLod>>,
 }
 
 #[derive(Default)]

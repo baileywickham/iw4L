@@ -234,7 +234,16 @@ pub fn capture_xmodel_skel_with_shared(
     shared: &SharedXModelSurfaces,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, Some(shared), false)
+    capture_model_skel_iw4(
+        stream,
+        strings,
+        geometry,
+        name,
+        materials,
+        Some(shared),
+        false,
+        None,
+    )
 }
 
 pub fn capture_xmodel_skel(
@@ -244,7 +253,9 @@ pub fn capture_xmodel_skel(
     materials: Option<&MaterialCatalog>,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+    capture_model_skel_iw4(
+        stream, strings, geometry, name, materials, None, false, None,
+    )
 }
 
 pub fn capture_fpv_skel(
@@ -257,7 +268,9 @@ pub fn capture_fpv_skel(
     if model_kind(&name) != Some(ModelKind::Fpv) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+    capture_model_skel_iw4(
+        stream, strings, geometry, name, materials, None, false, None,
+    )
 }
 
 pub fn capture_body_skel(
@@ -270,7 +283,9 @@ pub fn capture_body_skel(
     if model_kind(&name) != Some(ModelKind::Soldier) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+    capture_model_skel_iw4(
+        stream, strings, geometry, name, materials, None, false, None,
+    )
 }
 
 pub fn capture_world_weapon_skel(
@@ -283,7 +298,9 @@ pub fn capture_world_weapon_skel(
     if model_kind(&name) != Some(ModelKind::WorldWeapon) {
         return None;
     }
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+    capture_model_skel_iw4(
+        stream, strings, geometry, name, materials, None, false, None,
+    )
 }
 
 pub fn capture_untyped_skel(
@@ -293,7 +310,113 @@ pub fn capture_untyped_skel(
     materials: Option<&MaterialCatalog>,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, materials, None, false)
+    capture_model_skel_iw4(
+        stream, strings, geometry, name, materials, None, false, None,
+    )
+}
+
+/// A LOD whose surfaces live in an earlier zone (`,name`): an add-on zone's model
+/// over its base map's surfaces. `materials` are this model's walk-local slots.
+#[derive(Clone, Debug)]
+pub struct PendingSharedLod {
+    pub lod: usize,
+    pub surfaces: String,
+    pub count: usize,
+    pub num_bones: usize,
+    pub materials: Vec<Option<crate::WalkLocalMaterialIndex>>,
+}
+
+/// Like [`capture_xmodel_skel`], but LODs whose surfaces live in another zone are
+/// left empty and returned for [`splice_shared_lods`] once that zone is walked.
+pub fn capture_xmodel_skel_deferred(
+    stream: &ZoneStream<'_>,
+    strings: &ScriptStrings,
+    geometry: XModelGeometry,
+    materials: Option<&MaterialCatalog>,
+) -> Option<(ModelSkel, Vec<PendingSharedLod>)> {
+    let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
+    let mut pending = Vec::new();
+    let skel = capture_model_skel_iw4(
+        stream,
+        strings,
+        geometry,
+        name,
+        materials,
+        None,
+        false,
+        Some(&mut pending),
+    )?;
+    Some((skel, pending))
+}
+
+/// Copies the pending LODs' surfaces out of `shared`; returns how many LODs it filled.
+pub fn splice_shared_lods(
+    skel: &mut ModelSkel,
+    pending: &[PendingSharedLod],
+    shared: &SharedXModelSurfaces,
+) -> usize {
+    let mut filled = 0;
+    for lod in pending {
+        let Some((source, source_lod)) = shared.0.get(&lod.surfaces) else {
+            continue;
+        };
+        let (first, source_count) = source.lod_surf_span[*source_lod];
+        if usize::from(source_count) != lod.count || lod.lod >= 4 {
+            continue;
+        }
+        let range = usize::from(first)..usize::from(first) + lod.count;
+        if range.clone().any(|n| {
+            let (v, vn) = source.surface_vertex_ranges[n];
+            source.vert_skin[v..v + vn].iter().any(|skin| {
+                skin.bones
+                    .iter()
+                    .zip(skin.weights)
+                    .any(|(bone, weight)| weight != 0.0 && usize::from(*bone) >= lod.num_bones)
+            })
+        }) {
+            continue;
+        }
+        let Ok(start) = u16::try_from(skel.surface_vertex_ranges.len()) else {
+            continue;
+        };
+        for (offset, n) in range.enumerate() {
+            let (v, vn) = source.surface_vertex_ranges[n];
+            let (ix, ixn) = source.surface_index_ranges[n];
+            let base = skel.positions.len();
+            let index_start = skel.indices.len();
+            skel.positions
+                .extend_from_slice(&source.positions[v..v + vn]);
+            skel.normals.extend_from_slice(&source.normals[v..v + vn]);
+            skel.colors.extend_from_slice(&source.colors[v..v + vn]);
+            skel.uvs.extend_from_slice(&source.uvs[v..v + vn]);
+            skel.packed_vertices
+                .extend_from_slice(&source.packed_vertices[v..v + vn]);
+            for skin in &source.vert_skin[v..v + vn] {
+                if skin.weights[1] == 0.0 && skin.weights[0] == 1.0 {
+                    skel.rigid_verts += 1;
+                } else {
+                    skel.blend_verts += 1;
+                }
+                skel.vert_skin.push(*skin);
+            }
+            skel.indices.extend(
+                source.indices[ix..ix + ixn]
+                    .iter()
+                    .map(|index| base as u32 + *index - v as u32),
+            );
+            skel.surface_vertex_ranges.push((base, vn));
+            skel.surface_index_ranges.push((index_start, ixn));
+            skel.surface_part_bits.push(source.surface_part_bits[n]);
+            skel.surface_deformed.push(source.surface_deformed[n]);
+            skel.surface_vert_list_count
+                .push(source.surface_vert_list_count[n]);
+            skel.surface_materials
+                .push(lod.materials.get(offset).copied().flatten());
+        }
+        skel.lod_surf_span[lod.lod] = (start, source_count);
+        filled += 1;
+    }
+    filled
 }
 
 /// The skeleton (bones, pose, collision) without surfaces: enough for tag
@@ -304,7 +427,7 @@ pub fn capture_xmodel_bones(
     geometry: XModelGeometry,
 ) -> Option<ModelSkel> {
     let name = geometry.name.and_then(|p| stream.cstr(p).ok())?.to_owned();
-    capture_model_skel_iw4(stream, strings, geometry, name, None, None, true)
+    capture_model_skel_iw4(stream, strings, geometry, name, None, None, true, None)
 }
 
 fn capture_model_skel_iw4(
@@ -315,6 +438,7 @@ fn capture_model_skel_iw4(
     materials: Option<&MaterialCatalog>,
     shared: Option<&SharedXModelSurfaces>,
     bones_only: bool,
+    mut pending: Option<&mut Vec<PendingSharedLod>>,
 ) -> Option<ModelSkel> {
     let bone_names = geometry.bone_names?;
     let base_mat = geometry.base_mat?;
@@ -384,7 +508,28 @@ fn capture_model_skel_iw4(
                 .cstr(geometry.lod_surface_names[lod]?)
                 .ok()?
                 .trim_start_matches(',');
-            let (source, source_lod) = shared?.0.get(name)?;
+            let Some((source, source_lod)) = shared.and_then(|shared| shared.0.get(name)) else {
+                let pending = pending.as_deref_mut()?;
+                let handle_base = usize::from(geometry.lod_surf_index[lod]);
+                pending.push(PendingSharedLod {
+                    lod,
+                    surfaces: name.to_owned(),
+                    count,
+                    num_bones: geometry.num_bones,
+                    materials: (0..count)
+                        .map(|offset| {
+                            let slot = handle_base + offset;
+                            if slot >= geometry.material_handle_count {
+                                return None;
+                            }
+                            geometry.material_handles.and_then(|handles| {
+                                materials?.material_index(handles.at(slot * stream.pointer_bytes()))
+                            })
+                        })
+                        .collect(),
+                });
+                continue;
+            };
             let (first, source_count) = source.lod_surf_span[*source_lod];
             if usize::from(source_count) != count {
                 return None;
@@ -516,7 +661,7 @@ fn capture_model_skel_iw4(
         lod_surf_span[lod] = (u16::try_from(start).ok()?, u16::try_from(n).ok()?);
         any_surf = any_surf || n > 0;
     }
-    if !any_surf && !bones_only {
+    if !any_surf && !bones_only && pending.is_none_or(|pending| pending.is_empty()) {
         return None;
     }
 

@@ -1593,8 +1593,9 @@ pub(crate) struct WeaponZoneCapture {
     pub world_weapons: WorldWeaponBuild,
     pub xanims: XAnimBuild,
     pub bodies: BodyMeshBuild,
-    /// Skeletons of the zone's XModels, for the sim's tag lookups.
+    /// The zone's XModels (meshes when they have surfaces): the sim's tags, script models' draws.
     pub skeletons: asset_world::MapXModelSceneCatalog,
+    pub pending_lods: std::collections::BTreeMap<String, Vec<asset_model::PendingSharedLod>>,
     strings: ScriptStrings,
     xmodel_names: HashMap<Ptr, Ptr>,
     xmodel_surfaces: HashMap<Ptr, Ptr>,
@@ -1714,9 +1715,20 @@ impl AssetLinkSink for MaterialPopulationSink {
                 capture.bodies.capture(stream, &self.materials);
                 if let Some(geometry) = stream.xmodel()
                     && let Some(name) = geometry.name.and_then(|p| stream.cstr(p).ok())
-                    && let Some(skel) =
+                    && let Some((skel, pending)) = asset_model::capture_xmodel_skel_deferred(
+                        stream,
+                        &capture.strings,
+                        geometry,
+                        Some(&self.materials),
+                    )
+                    .or_else(|| {
                         asset_model::capture_xmodel_bones(stream, &capture.strings, geometry)
+                            .map(|skel| (skel, Vec::new()))
+                    })
                 {
+                    if !pending.is_empty() {
+                        capture.pending_lods.insert(name.to_owned(), pending);
+                    }
                     capture.skeletons.insert(
                         asset_world::MapXModelAssetKey(name.to_owned()),
                         asset_world::MapXModelSceneAsset::Iw4(std::sync::Arc::new(skel)),

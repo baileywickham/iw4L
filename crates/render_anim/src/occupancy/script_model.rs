@@ -389,6 +389,9 @@ fn apply_script_mover_centity_pose(
     mut owners: Query<(&WorldScriptModelInstance, &mut Transform)>,
     mut persist: ResMut<ScriptModelDobjs>,
     cg_clock: Option<Res<net::FrameClock>>,
+    local: Res<net::LocalPresentClient>,
+    assets: Option<Res<asset_world::MapXModelSceneCatalog>>,
+    mut seats: Local<HashMap<String, Option<Vec3>>>,
 ) {
     persist.mover_pose.clear();
     let Some(slots) = slots else {
@@ -406,6 +409,10 @@ fn apply_script_mover_centity_pose(
         .map(|clock| clock.time())
         .unwrap_or_else(|| sim::level_time_ms(snapshot.tick));
     let at_time = presented.trajectory_time_ms(at_time);
+    let driven = presented
+        .player(local.0)
+        .filter(|ps| ps.link_flags & playerstate_iw4::LINK_FLAGS_VEHICLE_SEAT != 0)
+        .and_then(|_| view_parent(presented, local.0));
     for (owner, mut transform) in &mut owners {
         let mapent = owner.id.source_ordinal();
         let Some(number) = owner.gentity_number else {
@@ -423,18 +430,84 @@ fn apply_script_mover_centity_pose(
                 .insert(mapent, ScriptMoverCentitySample::skip("no_runtime"));
             continue;
         };
-        let (origin, angles) = sample_script_mover_pose(runtime, at_time);
-        let [pitch, yaw, roll] = angles;
-        transform.rotation = Quat::from_euler(
+        let (mut origin, mut angles) = sample_script_mover_pose(runtime, at_time);
+        // The driver's camera rides the vehicle (feet on its seat tag, the seat's angles in
+        // `link_weapon_angles`); a vehicle sampled on the entity clock drifts tens of units
+        // and degrees from it at speed, so the driven one is placed from the player.
+        let seat = (driven == Some(i32::from(number)))
+            .then(|| presented.player(local.0))
+            .flatten()
+            .zip(assets.as_deref())
+            .and_then(|(ps, assets)| {
+                Some((ps, seat_local(&mut seats, assets, &owner.current_model.0)?))
+            });
+        if let Some((ps, _)) = seat {
+            angles = ps.link_weapon_angles;
+        }
+        let rotation = Quat::from_euler(
             EulerRot::ZYX,
-            yaw.to_radians(),
-            pitch.to_radians(),
-            roll.to_radians(),
+            angles[1].to_radians(),
+            angles[0].to_radians(),
+            angles[2].to_radians(),
         );
+        if let Some((ps, seat)) = seat {
+            origin = (Vec3::from_array(ps.origin) - rotation * seat).to_array();
+        }
+        transform.rotation = rotation;
         transform.translation = Vec3::from_array(origin);
         persist
             .mover_pose
             .insert(mapent, ScriptMoverCentitySample::posed(angles));
+    }
+}
+
+/// The vehicle-model-space bind position of the driver's seat tag (`tag_player`).
+fn seat_local(
+    cache: &mut HashMap<String, Option<Vec3>>,
+    assets: &asset_world::MapXModelSceneCatalog,
+    model: &str,
+) -> Option<Vec3> {
+    *cache.entry(model.to_owned()).or_insert_with(|| {
+        let skel = match assets.get_name(model)? {
+            asset_world::MapXModelSceneAsset::Iw4(skel)
+            | asset_world::MapXModelSceneAsset::Iw5(skel)
+            | asset_world::MapXModelSceneAsset::T5(skel) => skel,
+            asset_world::MapXModelSceneAsset::Unavailable { .. } => return None,
+        };
+        let bone = skel
+            .bone_names
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case("tag_player"))?;
+        let posed = skel
+            .retained_capability()?
+            .pose(
+                &xmodel_runtime::DObjPoseRequest::bind_pose(),
+                Mat4::IDENTITY,
+            )
+            .ok()?;
+        Some(posed.get(bone)?.w_axis.truncate())
+    })
+}
+
+/// The entity the local player's view is linked to (a driven vehicle, a scripted rig):
+/// `viewlocked_ent_num` with no turret view lock.
+fn view_parent(presented: &net::PresentedSnapshot, local: sim::ClientId) -> Option<i32> {
+    presented
+        .player(local)
+        .filter(|ps| ps.viewlocked == 0 && ps.pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED)
+        .map(|ps| ps.viewlocked_ent_num)
+}
+
+/// The view's own parent is drawn from inside it: its first LOD, never distance-culled
+/// (a rig's arms are an eye height from its origin, past `viewhands_player_*`'s 60 u LOD).
+fn lod_eye(
+    owner: &WorldScriptModelInstance,
+    parent: Option<i32>,
+    eye: Option<[f32; 3]>,
+) -> Option<[f32; 3]> {
+    match (owner.gentity_number, parent) {
+        (Some(number), Some(parent)) if i32::from(number) == parent => None,
+        _ => eye,
     }
 }
 
@@ -472,6 +545,7 @@ fn occupy_script_model_scene_ents(
         .ok()
         .map(|(xf, _, _)| xf.translation().to_array());
     let skinned_ramp = lod_skinned.args();
+    let parent = view_parent(&presented, local.0);
     for (owner, transform, visibility) in &owners {
         if is_weapon_camera_vehicle(owner, &presented, local.0) {
             continue;
@@ -484,6 +558,7 @@ fn occupy_script_model_scene_ents(
         };
         let skel_refs: Vec<&asset_model::ModelSkel> =
             skels.iter().map(|skel| skel.as_ref()).collect();
+        let eye = lod_eye(owner, parent, eye);
         if lod_culled(
             &skel_refs,
             transform.translation.to_array(),
@@ -586,6 +661,7 @@ fn pose_script_models(
         .ok()
         .map(|(xf, _, _)| xf.translation().to_array());
     let skinned_ramp = lod_skinned.args();
+    let parent = view_parent(&presented, local.0);
     for (entity, owner, transform, visibility) in &owners {
         if is_weapon_camera_vehicle(owner, &presented, local.0) {
             continue;
@@ -620,7 +696,7 @@ fn pose_script_models(
             continue;
         };
         let origin = transform.translation.to_array();
-
+        let eye = lod_eye(owner, parent, eye);
         if lod_culled(&skels, origin, eye, skinned_ramp) {
             if let Some(id) = focused_owner_id {
                 focus.refuse(id, &owner.current_model.0, "lod_culled");

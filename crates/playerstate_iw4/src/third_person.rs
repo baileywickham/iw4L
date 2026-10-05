@@ -40,6 +40,9 @@ pub const CG_CAMERA_PULLBACK_CLIPMASK: u32 = 0x0281_0011;
 
 pub const LINK_FLAGS_WEAPON_VIEW_ONLY: u32 = 4;
 
+/// IW4L: the player drives the vehicle `viewlocked_ent_num` names (feet on its seat tag).
+pub const LINK_FLAGS_VEHICLE_SEAT: u32 = 0x100;
+
 #[derive(Clone, Copy, Debug)]
 pub struct ThirdPersonViewInputs {
     pub pm_type: i32,

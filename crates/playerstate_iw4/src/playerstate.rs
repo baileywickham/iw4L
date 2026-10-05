@@ -197,6 +197,10 @@ pub mod weap_flags {
     pub const DOUBLEBARREL_RECOIL: u32 = 0x200;
 
     pub const RECOIL_SCALE: u32 = 0x400;
+
+    /// SP `hideViewModel` and vehicle drivers: no first-person weapon is drawn.
+    /// IW4L's own bit (MP never sets it).
+    pub const VIEWMODEL_HIDDEN: u32 = 0x0010_0000;
 }
 
 #[must_use]

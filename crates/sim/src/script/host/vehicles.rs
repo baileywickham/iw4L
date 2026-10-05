@@ -1328,6 +1328,7 @@ pub(crate) fn advance(world: &mut World) {
         .copied()
         .collect();
     let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
+    let mut driven = false;
     for id in ids {
         if world
             .resource::<Runtime>()
@@ -1339,6 +1340,7 @@ pub(crate) fn advance(world: &mut World) {
             for (note, args) in super::vehicle_drive::step(world, id) {
                 raise(world, Value::Object(id), note, args);
             }
+            driven = true;
             continue;
         }
         let (gunner, weapon) = world
@@ -1553,6 +1555,10 @@ pub(crate) fn advance(world: &mut World) {
         for note in notes {
             raise(world, Value::Object(id), note, Vec::new());
         }
+    }
+    // Drivers ride this tick's vehicle pose, not last tick's (132 u behind at 150 mph).
+    if driven {
+        super::players::apply_player_links(world);
     }
 }
 

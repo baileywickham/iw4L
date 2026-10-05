@@ -357,6 +357,8 @@ pub struct MapXModelSceneCatalog {
 
     surface_materials: BTreeMap<MapXModelAssetKey, Vec<Option<crate::MaterialIndex>>>,
     resolved: bool,
+    /// The map walk's LOD surfaces by name; add-on zones' models reuse them (`,name`).
+    pub shared_surfaces: asset_model::SharedXModelSurfaces,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -441,7 +443,49 @@ impl MapXModelSceneCatalog {
         self.assets.entry(key).or_insert(asset);
     }
 
+    /// Fills deferred LODs from `shared`; returns how many LODs were filled.
+    pub fn splice_shared_lods(
+        &mut self,
+        pending: &BTreeMap<String, Vec<asset_model::PendingSharedLod>>,
+        shared: &asset_model::SharedXModelSurfaces,
+    ) -> usize {
+        let mut filled = 0;
+        for (name, lods) in pending {
+            if let Some(
+                MapXModelSceneAsset::Iw4(skel)
+                | MapXModelSceneAsset::T5(skel)
+                | MapXModelSceneAsset::Iw5(skel),
+            ) = self.assets.get_mut(name.as_str())
+            {
+                filled += asset_model::splice_shared_lods(Arc::make_mut(skel), lods, shared);
+            }
+        }
+        filled
+    }
+
     pub fn remap_walk_materials(&mut self, donor_to_host: &[usize]) {
+        self.remap_walk_materials_with(|local| donor_to_host.get(local).copied());
+    }
+
+    /// Walk-local material indices the captured surfaces use.
+    pub fn walk_material_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.assets
+            .values()
+            .filter_map(|asset| match asset {
+                MapXModelSceneAsset::Iw4(skel)
+                | MapXModelSceneAsset::T5(skel)
+                | MapXModelSceneAsset::Iw5(skel) => Some(skel),
+                MapXModelSceneAsset::Unavailable { .. } => None,
+            })
+            .flat_map(|skel| {
+                skel.surface_materials
+                    .iter()
+                    .flatten()
+                    .map(|local| local.get())
+            })
+    }
+
+    pub fn remap_walk_materials_with(&mut self, donor_to_host: impl Fn(usize) -> Option<usize>) {
         for asset in self.assets.values_mut() {
             let (MapXModelSceneAsset::Iw4(skel)
             | MapXModelSceneAsset::T5(skel)
@@ -452,9 +496,7 @@ impl MapXModelSceneCatalog {
             let skel = Arc::make_mut(skel);
             for slot in &mut skel.surface_materials {
                 *slot = slot.and_then(|local| {
-                    donor_to_host
-                        .get(local.get())
-                        .map(|&host| asset_core::WalkLocalMaterialIndex::from_walk(host))
+                    donor_to_host(local.get()).map(asset_core::WalkLocalMaterialIndex::from_walk)
                 });
             }
         }

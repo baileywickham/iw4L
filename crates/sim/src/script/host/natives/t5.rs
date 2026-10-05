@@ -527,7 +527,7 @@ fn dstat_path(args: &[Value]) -> Result<String, String> {
     Ok(path)
 }
 
-fn client_bits(world: &World, clients: impl IntoIterator<Item = u32>) -> u64 {
+pub(crate) fn client_bits(world: &World, clients: impl IntoIterator<Item = u32>) -> u64 {
     let _ = world;
     clients
         .into_iter()
@@ -535,7 +535,7 @@ fn client_bits(world: &World, clients: impl IntoIterator<Item = u32>) -> u64 {
         .fold(0, |bits, c| bits | 1 << c)
 }
 
-fn visibility(
+pub(crate) fn visibility(
     world: &mut World,
     receiver: &Value,
     change: impl FnOnce(&mut super::super::entities::ScriptEntity, u64),

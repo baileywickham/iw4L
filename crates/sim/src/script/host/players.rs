@@ -1397,7 +1397,17 @@ pub(crate) fn link_parent_pose(
 
 pub(crate) fn link_player(world: &mut World, client: u32, link: PlayerLink) {
     let id = ClientId(client);
+    // The parent's model presence (what the client draws) rides with the view:
+    // `viewlocked_ent_num` names it with `viewlocked` 0.
+    let presence = world
+        .resource::<Runtime>()
+        .entities
+        .get(&link.parent)
+        .and_then(|entity| entity.presence);
     let mut frame = FrameWorld::from_world(world);
+    let parent_number = presence
+        .and_then(|presence| frame.gentity_number(presence))
+        .unwrap_or(playerstate_iw4::ENTITYNUM_NONE);
     if frame.client_meta(id).is_some() {
         frame.client_meta_mut(id).controls.linked = true;
     }
@@ -1406,6 +1416,7 @@ pub(crate) fn link_player(world: &mut World, client: u32, link: PlayerLink) {
             ps.pm_type = playerstate_iw4::PM_TYPE_NORMAL_LINKED;
         }
         ps.velocity = [0.0; 3];
+        ps.viewlocked_ent_num = parent_number;
         if link.view == LinkView::WeaponDelta {
             ps.link_flags |= playerstate_iw4::LINK_FLAGS_WEAPON_VIEW_ONLY;
             ps.link_weapon_angles = ps.viewangles;
@@ -1428,10 +1439,16 @@ pub(crate) fn unlink_player(world: &mut World, client: u32) {
         frame.client_meta_mut(id).controls.linked = false;
         frame.client_meta_mut(id).linked_weapon_view = None;
     }
+    let mut seat = false;
     if let Some(ps) = frame.player_mut(id) {
         if ps.pm_type == playerstate_iw4::PM_TYPE_NORMAL_LINKED {
             ps.pm_type = PM_TYPE_NORMAL;
         }
+        if ps.viewlocked == 0 {
+            ps.viewlocked_ent_num = playerstate_iw4::ENTITYNUM_NONE;
+        }
+        seat = ps.link_flags & playerstate_iw4::LINK_FLAGS_VEHICLE_SEAT != 0;
+        ps.link_flags &= !playerstate_iw4::LINK_FLAGS_VEHICLE_SEAT;
         if let Some(link) = link.filter(|link| link.view == LinkView::WeaponDelta) {
             ps.link_flags &= !playerstate_iw4::LINK_FLAGS_WEAPON_VIEW_ONLY;
             if let Some(view) = link.restore_view {
@@ -1441,6 +1458,9 @@ pub(crate) fn unlink_player(world: &mut World, client: u32) {
                 ps.viewangles = view;
             }
         }
+    }
+    if seat {
+        super::natives::sp::set_viewmodel_hidden(world, client, false);
     }
 }
 
@@ -1507,6 +1527,9 @@ pub(crate) fn apply_player_links(world: &mut World) {
             ps.viewangles = view;
             if link.view == LinkView::WeaponDelta {
                 ps.link_weapon_angles = view;
+            } else if ps.link_flags & playerstate_iw4::LINK_FLAGS_VEHICLE_SEAT != 0 {
+                // The seat's pose this tick: the client draws the vehicle from it.
+                ps.link_weapon_angles = parent;
             }
         }
         if link.view == LinkView::WeaponDelta {
