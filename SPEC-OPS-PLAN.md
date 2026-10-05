@@ -352,3 +352,25 @@ Install with `steamcmd +@sSteamCmdForcePlatformType windows +force_install_dir ~
   Regular hit roll 63% → 9% (predicted 8%), Veteran 69% → 13% (predicted 10%); the attacker-count term (~0.22 with
   ~4 watchers) and the lower graph do most of it.
 - Regressions (Air): Pit 2:37.80, snowrace1 0:58.85, killspree_favela 1:17.95, killspree_invasion 1:40.80, mp_boneyard InGame.
+
+**Dog neck snap (2026-10-04)**
+- What the script wants (`animscripts/dog/dog_combat.gsc`, contingency zone): `meleeBiteAttackPlayer` runs
+  `dog_melee_death`, which waits for the `dog_early` notetrack, waits for the button to be released, then polls
+  `player MeleeButtonPressed()` every 0.05 s. `dog_lunge` → `set_melee_timer` shows the `[{+melee}]` hint and stamps
+  `melee_able_timer` 0.15 s later; a press within `gs.dog_presstime` (375 ms Regular) sets `player_view.neckSnapped`,
+  notifies `melee_stop`, plays `german_shepherd_player_neck_snap` and `kill()`s the dog at its `dog_death` note;
+  `PlayerView_EndSequence` plays `player_view_dog_knockdown_neck_snap`, unlinks and restores the player. Too early on
+  Regular is free; too late → `knockdown_late` and `dogbite_damage` → `killplayer` (`kill()`, through god). No
+  `notifyoncommand`, no flag.
+- Engine: `meleebuttonpressed` already read the raw usercmd (frozen/weapons-disabled strip melee from the move, not
+  from this read); it now logs `player: client=0 melee button held t=…`. `shellshock( "dog_bite" )` has no
+  `shock/dog_bite.shock` in any zone/IWD: falls back to `default` (it used to kill the bite notetrack thread).
+  A debug `tp`/`move` that lands while a script holds the player linked is deferred until the unlink (it timed out
+  the run's `wait move` after a knock-down); `link: client N unlinked from …` is logged.
+- Run: `so_forest_contingency/run.cmds` taps `+melee` every 0.35 s at every stop, also while `+attack` is held.
+  Air: `dog entity 622 … attacks` → knock-down link → melee held t=105200 → `clearing_dog_hint` (green fade) →
+  `entity 622 died by player 0 means=MOD_SUICIDE` → mission success 2:11.50. Second run: dog 612 knifed
+  (`MOD_MELEE`) on its charge, dog 620 knock-down → neck snap t=110350 → unlink; then the tp issued mid-sequence
+  timed out (before the deferral). Screens `context/runs/logs/forest_a_shots/knockdown_05.png` (rig view),
+  `knockdown_06.png` (on the back, hint fading).
+- Open: the dog and viewhands are not visible in the knock-down screenshots; the hint reads `Unbound(+melee)`.

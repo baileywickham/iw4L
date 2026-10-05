@@ -1434,6 +1434,9 @@ pub(crate) fn unlink_player(world: &mut World, client: u32) {
         .players
         .get_mut(&client)
         .and_then(|slot| slot.link.take());
+    if let Some(link) = &link {
+        diag::info!(Sim, "link: client {client} unlinked from {:?}", link.parent);
+    }
     let mut frame = FrameWorld::from_world(world);
     if frame.client_meta(id).is_some() {
         frame.client_meta_mut(id).controls.linked = false;

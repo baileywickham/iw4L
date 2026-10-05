@@ -431,7 +431,29 @@ fn apply_actions_system(world: &mut World) {
     }
 
     frame.enter_kernel_phase(crate::gentity::KernelPhase::ApplyActions);
+    apply_deferred_debug_moves(&mut frame);
     apply_actions(&mut frame, tick, &actions);
+}
+
+fn apply_deferred_debug_moves(world: &mut FrameWorld) {
+    for id in world.client_ids_sorted() {
+        let Some(meta) = world.client_meta(id) else {
+            continue;
+        };
+        let Some((origin, angles)) = meta.deferred_debug_move else {
+            continue;
+        };
+        if meta.lifecycle != ClientLifecycle::Alive {
+            world.client_meta_mut(id).deferred_debug_move = None;
+        } else if !meta.controls.linked {
+            diag::info!(
+                Sim,
+                "move: client={} unlinked; applying the deferred move",
+                id.0
+            );
+            apply_debug_move(world, id, origin, angles);
+        }
+    }
 }
 
 fn run_players_system(ecs: &mut World) {
@@ -1282,6 +1304,16 @@ fn apply_debug_move(world: &mut FrameWorld, id: ClientId, origin: [f32; 3], angl
     if !origin.iter().chain(angles.iter()).all(|v| v.is_finite()) {
         return;
     }
+    if world.client_meta(id).is_some_and(|m| m.controls.linked) {
+        diag::info!(
+            Sim,
+            "move: client={} is linked by a script; deferred until it is unlinked",
+            id.0
+        );
+        world.client_meta_mut(id).deferred_debug_move = Some((origin, angles));
+        return;
+    }
+    world.client_meta_mut(id).deferred_debug_move = None;
     let old_origin = {
         let Some(ps) = world.player_mut(id) else {
             return;
@@ -1323,7 +1355,7 @@ fn restamp_debug_move_look(world: &mut FrameWorld, actions: &[(ClientId, ClientA
         }
         if !world
             .client_meta(*id)
-            .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive)
+            .is_some_and(|m| m.lifecycle == ClientLifecycle::Alive && !m.controls.linked)
         {
             continue;
         }

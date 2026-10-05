@@ -1239,12 +1239,25 @@ fn register_body(registry: &mut NativeRegistry) {
             });
         )*};
     }
+    // Raw command buttons: `freezecontrols`/`disableweapons` strip melee from the
+    // move but not from this read (the dog knock-down polls it while both are on).
+    // Only `dog_combat`'s neck-snap counter polls it, so a press is logged.
+    registry.register(Method, "meleebuttonpressed", |world, receiver, _| {
+        let id = client_of(world, receiver)?;
+        let held = script_player::buttons(&mut FrameWorld::from_world(world), id)
+            & playerstate_iw4::buttons::MELEE_CHARGE
+            != 0;
+        if held {
+            let now = crate::level_time_ms(world.resource::<crate::step::StepRequest>().tick);
+            diag::info!(Sim, "player: client={} melee button held t={now}", id.0);
+        }
+        Ok(Value::Int(held.into()))
+    });
     {
         use playerstate_iw4::buttons::*;
         button!(
             "attackbuttonpressed" => ATTACK,
             "usebuttonpressed" => USE | USE_RELOAD,
-            "meleebuttonpressed" => MELEE_CHARGE,
             "fragbuttonpressed" => FRAG,
             "secondaryoffhandbuttonpressed" => SMOKE,
             "adsbuttonpressed" => ADS,
@@ -1313,10 +1326,23 @@ fn register_body(registry: &mut NativeRegistry) {
             .get(&("shellshock", name.clone()))
             .ok_or_else(|| format!("shellshock '{name}' was not precached"))?;
         let mut frame = FrameWorld::from_world(world);
-        let shock = frame
-            .shock(&name)
-            .cloned()
-            .ok_or_else(|| format!("no shock file for shellshock '{name}'"))?;
+        // SP's dog bite precaches `dog_bite`, which no shipped zone or IWD carries a
+        // `shock/dog_bite.shock` for: shake with the default parameters instead of
+        // failing the dog's notetrack thread.
+        let shock = match frame.shock(&name) {
+            Some(shock) => shock.clone(),
+            None => {
+                let fallback = frame
+                    .shock("default")
+                    .cloned()
+                    .ok_or_else(|| format!("no shock file for shellshock '{name}'"))?;
+                diag::info!(
+                    Sim,
+                    "shellshock '{name}': no shock file, using the default parameters"
+                );
+                fallback
+            }
+        };
         let now = crate::level_time_ms(frame.ecs().resource::<crate::step::StepRequest>().tick);
         let Some(ps) = frame.player_mut(id) else {
             return Ok(Value::Undefined);

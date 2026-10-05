@@ -114,6 +114,10 @@ pub struct ClientMatchState {
 
     pub(crate) forced_spawn: Option<crate::SpawnPick>,
 
+    /// A debug `tp`/`move` that arrived while a script held the player linked
+    /// (dog knock-down, rigs): applied once the script unlinks him.
+    pub(crate) deferred_debug_move: Option<([f32; 3], [f32; 3])>,
+
     pub(crate) look_at_killer_yaw: i32,
 
     pub(crate) name: [u8; 16],
