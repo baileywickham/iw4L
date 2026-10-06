@@ -65,6 +65,7 @@ fn vector_field(runtime: &mut Runtime, object: u64, name: &str) -> [f32; 3] {
 
 pub(crate) fn run_script(world: &mut World, name: &str, receiver: Value) -> Option<u64> {
     if !has_function(world, name) {
+        crate::script::runtime::missing_function(world, name);
         return None;
     }
     let now = now_ms(world);
@@ -458,22 +459,36 @@ fn use_tree(world: &mut World, object: u64, name: &str) {
     }
 }
 
-/// The module an engine animscript state runs for this actor's species: dogs
-/// run `animscripts/dog/dog_<state>` (states they have no script for fight).
+/// The module an engine animscript state runs for this actor's species
+/// (`animscripts/%s/%s`): dogs run `dog/dog_<state>`, civilians
+/// `civilian/civilian_<state>`; states a species has no script for fight
+/// (civilians answer grenades with `civilian_grenade_response`).
 pub(crate) fn animscript_module(world: &World, actor: ActorId, state: &str) -> String {
-    let dog = world
+    let species = world
         .resource::<ActorPool>()
         .actors
         .get(&actor)
-        .is_some_and(|a| &*a.species == "dog");
-    if !dog || state.starts_with("traverse/") {
+        .map(|a| a.species.clone());
+    if state.starts_with("traverse/") {
         return state.to_owned();
     }
-    match state {
-        "init" | "move" | "stop" | "combat" | "death" | "pain" | "flashed" | "scripted" => {
-            format!("dog/dog_{state}")
+    match (species.as_deref(), state) {
+        (
+            Some("dog"),
+            "init" | "move" | "stop" | "combat" | "death" | "pain" | "flashed" | "scripted",
+        ) => format!("dog/dog_{state}"),
+        (Some("dog"), _) => "dog/dog_combat".to_owned(),
+        (
+            Some("civilian"),
+            "init" | "move" | "stop" | "combat" | "death" | "pain" | "flashed" | "scripted"
+            | "reactions" | "cover_arrival" | "cover_crouch" | "cover_left" | "cover_prone"
+            | "cover_right" | "cover_stand",
+        ) => format!("civilian/civilian_{state}"),
+        (Some("civilian"), "grenade_cower" | "grenade_return_throw") => {
+            "civilian/civilian_grenade_response".to_owned()
         }
-        _ => "dog/dog_combat".to_owned(),
+        (Some("civilian"), _) => "civilian/civilian_combat".to_owned(),
+        _ => state.to_owned(),
     }
 }
 

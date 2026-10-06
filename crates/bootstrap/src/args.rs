@@ -13,6 +13,7 @@ pub enum LaunchMode {
     Map(String),
     Serve(String),
     ExportGltf(String),
+    GscAudit(Vec<String>),
     Play {
         name: String,
         zone_override: Option<String>,
@@ -77,7 +78,7 @@ fn parse_acceptance_flag(
     Ok((out, acceptance))
 }
 
-const USAGE: &str = "usage: iw4l [--no-cheats] [--cmds '<script>'] map <zone> | serve <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l --help";
+const USAGE: &str = "usage: iw4l [--no-cheats] [--cmds '<script>'] map <zone> | serve <zone> | menu | play <demo>\n       iw4l export-gltf <zone>\n       iw4l gsc-audit <so_mission>... | all\n       iw4l --help";
 
 pub fn parse_launch_args(mut args: impl Iterator<Item = String>) -> Result<LaunchMode, String> {
     match args.next().as_deref() {
@@ -102,6 +103,13 @@ pub fn parse_launch_args(mut args: impl Iterator<Item = String>) -> Result<Launc
                 return Err("usage: iw4l export-gltf <zone>".into());
             }
             Ok(LaunchMode::ExportGltf(zone))
+        }
+        Some("gsc-audit") => {
+            let missions: Vec<String> = args.collect();
+            if missions.is_empty() {
+                return Err("usage: iw4l gsc-audit <so_mission>... | all".into());
+            }
+            Ok(LaunchMode::GscAudit(missions))
         }
         Some("menu") => {
             if args.next().is_some() {

@@ -166,6 +166,7 @@ pub fn launch(
             }
             run_export_gltf(games, artifacts, zone);
         }
+        LaunchMode::GscAudit(missions) => crate::gsc_audit::run(games, artifacts, missions),
         LaunchMode::Play {
             name,
             zone_override,

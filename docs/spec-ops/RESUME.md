@@ -51,6 +51,7 @@ Typical run: `IW4L_AIR_TIMEOUT=600 ~/bin/iw4l-air "$PWD" --env IW4L_GSC_STUB_NAT
 | `IW4L_GSC_USAGE=1` | histogram of stub calls, runtime errors, actor field use at quit |
 | `IW4L_GSC_STATS=1`, `IW4L_GSC_HITCH_MS`, `IW4L_SIM_STATS=1` | script/sim timing census, breakdown of slow ticks |
 | `IW4L_GSC_TRACE_LEVEL=1`, `IW4L_GSC_TRACE_NOTIFY=a,b` | log level notifies / chosen notifies |
+| `IW4L_GSC_MODULES_LOG=1`, `iw4l gsc-audit <so_mission>… \| all` (headless) | zone modules compiled/not at install; engine-named scripts the program misses (`docs/spec-ops/SCRIPT-AUDIT.md`) |
 | `IW4L_SCRIPT_OVERRIDE=<dir>` | loose `.gsc` files override zone scripts |
 | `IW4L_AUTOAIM=1` | test aimer: while `+attack` is held, turns to the nearest visible enemy (`=3` hunts) |
 | `IW4L_AUTOFIRE=1` (`_RANGE`) | test aimer that aims and fires on its own |

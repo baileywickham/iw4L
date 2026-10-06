@@ -1657,3 +1657,10 @@ fn walk_so_mission(addon: &Path, progress: &LoadProgress) -> SoMissionWalk {
         report,
     }
 }
+
+/// One zone's GSC modules, tables and configs, walked on their own (`iw4l gsc-audit`).
+pub fn zone_script_sources(path: &Path) -> Result<crate::ScriptSources, String> {
+    let image =
+        open_zone_shared(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    Ok(crate::lane::walk_script_zone(path, &image, &LoadProgress::default(), false).scripts)
+}

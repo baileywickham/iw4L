@@ -47,7 +47,7 @@ pub use ir::IR_VERSION;
 pub(crate) use ir::{Binary, Callee, Function, Global, Op, Unary};
 pub use profile::catalog::{Builtin, Catalog, Namespace, Owner};
 pub use profile::iw4_startup::Iw4Startup;
-pub use profile::iw4sp_startup::Iw4SpStartup;
+pub use profile::iw4sp_startup::{Iw4SpStartup, engine_named};
 pub use program::{ModuleIdentity, Program, Realm, Site};
 pub use runtime::usage::report as report_usage;
 pub(crate) use runtime::{

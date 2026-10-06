@@ -149,11 +149,48 @@ fn entry(world: &World, name: &str) -> Result<(Arc<Program>, usize, Location), F
         .as_ref()
         .ok_or_else(|| Fault::at(&location, "no loaded GSC program"))?
         .clone();
-    let function = *program
+    let Some(&function) = program
         .names
         .get(&name.replace('\\', "/").to_ascii_lowercase())
-        .ok_or_else(|| Fault::at(&location, "unknown script entry point"))?;
+    else {
+        missing_function(world, name);
+        return Err(Fault::at(&location, "unknown script entry point"));
+    };
     Ok((program, function, location))
+}
+
+/// The engine asked for a script function by name that the installed program
+/// lacks: logged once per name, so a script the startup roots miss is loud.
+/// A loaded animscript without the optional `end_script` is not reported.
+pub(crate) fn missing_function(world: &World, name: &str) {
+    static SEEN: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let Some(program) = world.resource::<Runtime>().program.as_ref() else {
+        return;
+    };
+    let name = name.replace('\\', "/").to_ascii_lowercase();
+    let module = name
+        .split_once("::")
+        .map_or(name.as_str(), |(module, _)| module);
+    let loaded = program.modules.iter().any(|m| m.module == module);
+    if loaded && name.ends_with("::end_script") {
+        return;
+    }
+    if !SEEN
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(name.clone())
+    {
+        return;
+    }
+    diag::warn!(
+        Sim,
+        "gsc: engine called {name}, which is not in the program ({})",
+        match loaded {
+            true => "its module has no such function",
+            false => "module not compiled",
+        }
+    );
 }
 
 pub(crate) fn start(

@@ -826,20 +826,6 @@ pub(crate) fn switch_animscript(
     });
     let module = super::actors::animscript_module(world, id, &wanted);
     let main = format!("animscripts/{module}::main");
-    if !super::actors::has_function(world, &main) {
-        static MISSING: std::sync::Mutex<std::collections::BTreeSet<String>> =
-            std::sync::Mutex::new(std::collections::BTreeSet::new());
-        if MISSING
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(main.clone())
-        {
-            diag::warn!(
-                Sim,
-                "actor: {main} is not loaded; actors in that state run no animscript"
-            );
-        }
-    }
     let serial = run_script(world, &main, Value::Object(object));
     with_actor(world, id, |a| {
         a.animscript = Some((wanted, serial.unwrap_or(0)))

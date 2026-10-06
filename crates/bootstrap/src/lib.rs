@@ -1,6 +1,7 @@
 pub mod args;
 pub mod bench;
 mod frame_owner;
+mod gsc_audit;
 mod launch;
 mod plugins;
 

@@ -193,7 +193,7 @@ impl ScriptSources {
         self.entities = Some(entities);
     }
 
-    pub(crate) fn overlay(&mut self, other: Self) {
+    pub fn overlay(&mut self, other: Self) {
         self.sources.extend(other.sources);
         self.tables.extend(other.tables);
         self.schemas.extend(other.schemas);

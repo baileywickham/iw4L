@@ -1127,37 +1127,43 @@ fn preflight_match_install(
             })
             .collect(),
     };
-    let (startup_roots, startup_entries, script_catalog) = match specops {
+    let stub_natives = std::env::var("IW4L_GSC_STUB_NATIVES").is_ok_and(|value| value == "1");
+    let (scripts, startup_entries) = match specops {
         true => {
-            let startup = sim::script::Iw4SpStartup::new(zone, sources.0.modules());
-            (
-                startup.roots,
-                startup.entries,
-                sim::script::Catalog::iw4sp(),
-            )
+            let mut startup = sim::script::Iw4SpStartup::new(zone, sources.0.modules());
+            let catalog = sim::script::Catalog::iw4sp().with_native_stubs(stub_natives);
+            let scripts = startup.load(&sources, &catalog);
+            (scripts, startup.entries)
         }
         false => {
             let startup = sim::script::Iw4Startup::new(&sources, gametype, zone);
-            (startup.roots, startup.entries, sim::script::Catalog::iw4())
+            let roots: Vec<&str> = startup.roots.iter().map(String::as_str).collect();
+            let catalog = sim::script::Catalog::iw4().with_native_stubs(stub_natives);
+            (
+                sim::script::Program::load(&sources, &roots, &catalog),
+                startup.entries,
+            )
         }
     };
-    let mut roots: Vec<&str> = startup_roots.iter().map(String::as_str).collect();
-    let stub_natives = std::env::var("IW4L_GSC_STUB_NATIVES").is_ok_and(|value| value == "1");
-    let script_catalog = script_catalog.with_native_stubs(stub_natives);
-    // Traverse animscripts are roots only because the engine names them; one
-    // the zones ship broken (unused by the game, e.g. `stairs_down`) is dropped.
-    let scripts = loop {
-        match sim::script::Program::load(&sources, &roots, &script_catalog) {
-            Err(e)
-                if e.location.module.starts_with("animscripts/traverse/")
-                    && roots.contains(&e.location.module.as_str()) =>
-            {
-                diag::warn!(Sim, "gsc: traverse script dropped: {e}");
-                roots.retain(|root| *root != e.location.module);
-            }
-            result => break result.map_err(|e| script_refusal(zone, gametype, "compile", &e))?,
+    let scripts = scripts.map_err(|e| script_refusal(zone, gametype, "compile", &e))?;
+    if std::env::var("IW4L_GSC_MODULES_LOG").is_ok_and(|value| value == "1") {
+        let compiled: std::collections::BTreeSet<&str> = scripts
+            .modules()
+            .iter()
+            .map(|m| m.module.as_str())
+            .collect();
+        for module in sources.0.modules() {
+            diag::info!(
+                Sim,
+                "gsc module: {module} {}",
+                if compiled.contains(module) {
+                    "compiled"
+                } else {
+                    "not compiled"
+                }
+            );
         }
-    };
+    }
     let config = sources
         .0
         .config(MATCH_CONFIG)
