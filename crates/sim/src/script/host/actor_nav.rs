@@ -801,7 +801,7 @@ pub(crate) fn switch_animscript(
         if thread_running(world, *serial) {
             crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
         }
-        if *name != wanted {
+        if *name != wanted && &**name != "custom" {
             let module = super::actors::animscript_module(world, id, name);
             run_script(
                 world,
@@ -874,12 +874,14 @@ fn begin_custom(world: &mut World, receiver: &Value, function: u32) -> Result<()
         if thread_running(world, serial) {
             crate::script::runtime::notify_now(world, receiver.clone(), "killanimscript", now);
         }
-        let module = super::actors::animscript_module(world, id, &name);
-        run_script(
-            world,
-            &format!("animscripts/{module}::end_script"),
-            receiver.clone(),
-        );
+        if &*name != "custom" {
+            let module = super::actors::animscript_module(world, id, &name);
+            run_script(
+                world,
+                &format!("animscripts/{module}::end_script"),
+                receiver.clone(),
+            );
+        }
     }
     clear_path(world, id);
     let serial =
